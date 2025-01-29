@@ -9,6 +9,7 @@ import time
 import os
 import json
 import psutil
+from selenium.common.exceptions import TimeoutException
 
 def kill_existing_chrome():
     """Kill any existing Chrome processes"""
@@ -110,162 +111,12 @@ def login_to_hubspot(driver):
     time.sleep(5)
     print("Login completed")
 
-def process_duplicates(driver, pairs_to_process):
-    try:
-        # Find all Review buttons using the exact attributes from your HTML
-        review_buttons = WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((
-                By.CSS_SELECTOR, 
-                "button[aria-label='Review'][data-test-id='reviewDuplicates']"
-            ))
-        )
-        
-        total_pairs = len(review_buttons)
-        print(f"Found {total_pairs} total pairs")
-        
-        if pairs_to_process > total_pairs:
-            print(f"Warning: Only {total_pairs} pairs available. Will process all available pairs.")
-            pairs_to_process = total_pairs
-        
-        print(f"Will process {pairs_to_process} pairs")
-        proceed = input("Press Enter to continue or type 'n' to cancel: ")
-        if proceed.lower() == 'n':
-            return False
-            
-        # Process requested number of pairs
-        for i in range(pairs_to_process):
-            try:
-                print(f"\nProcessing pair {i + 1} of {pairs_to_process}...")
-                
-                # Click the Review button
-                review_buttons[i].click()
-                time.sleep(2)
-                
-                # Wait for the modal to appear
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.modal-dialog"))
-                )
-                
-                # Find both contact number elements
-                contact_numbers = driver.find_elements(
-                    By.CSS_SELECTOR,
-                    "dl dd:nth-child(6) span span span span"
-                )
-                
-                if len(contact_numbers) < 2:
-                    raise Exception("Could not find contact numbers")
-                
-                # Extract and compare the numbers
-                num1 = int(contact_numbers[0].text)
-                num2 = int(contact_numbers[1].text)
-                
-                print(f"Found contact numbers: {num1} and {num2}")
-                
-                # Find the record cards
-                cards = WebDriverWait(driver, 10).until(
-                    EC.presence_of_all_elements_located((
-                        By.CSS_SELECTOR,
-                        "div.modal-dialog div[role='radiogroup'] > div"
-                    ))
-                )
-                
-                if len(cards) < 2:
-                    raise Exception("Could not find record cards")
-                
-                # Click the appropriate card based on contact numbers
-                if num2 > num1:
-                    driver.execute_script("arguments[0].click();", cards[1])
-                    print("Selected second record (more contacts)")
-                else:
-                    driver.execute_script("arguments[0].click();", cards[0])
-                    print("Selected first record (more or equal contacts)")
-                
-                time.sleep(1)  # Give the UI a moment to update after selection
-                
-                # Find and click the Merge button - trying multiple selectors
-                try:
-                    # First try the footer button
-                    merge_button = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((
-                            By.CSS_SELECTOR,
-                            "div.modal-dialog footer button.private-button--primary"
-                        ))
-                    )
-                except:
-                    try:
-                        # Try finding by button text
-                        merge_button = WebDriverWait(driver, 5).until(
-                            EC.element_to_be_clickable((
-                                By.XPATH,
-                                "//button[contains(text(), 'Merge')]"
-                            ))
-                        )
-                    except:
-                        # Last resort - try finding any primary button in the modal
-                        merge_button = WebDriverWait(driver, 5).until(
-                            EC.element_to_be_clickable((
-                                By.CSS_SELECTOR,
-                                "div.modal-dialog button[type='button']:not([class*='cancel'])"
-                            ))
-                        )
-                
-                print("Clicking Merge button...")
-                try:
-                    merge_button.click()
-                except:
-                    # If regular click fails, try JavaScript click
-                    driver.execute_script("arguments[0].click();", merge_button)
-                
-                # Wait for the merge to complete and modal to close
-                WebDriverWait(driver, 10).until(
-                    EC.invisibility_of_element_located((By.CSS_SELECTOR, "div.modal-dialog"))
-                )
-                
-                print(f"Pair {i + 1} merged successfully")
-                
-                # Wait and refresh for next pair
-                time.sleep(2)
-                driver.refresh()
-                time.sleep(3)
-                
-                # Re-find the review buttons after refresh
-                review_buttons = WebDriverWait(driver, 10).until(
-                    EC.presence_of_all_elements_located((
-                        By.CSS_SELECTOR, 
-                        "button[aria-label='Review'][data-test-id='reviewDuplicates']"
-                    ))
-                )
-                
-            except Exception as e:
-                print(f"An error occurred with pair {i + 1}: {str(e)}")
-                print("Continuing with next pair...")
-                driver.refresh()
-                time.sleep(3)
-                
-                # Re-find the review buttons after error
-                review_buttons = WebDriverWait(driver, 10).until(
-                    EC.presence_of_all_elements_located((
-                        By.CSS_SELECTOR, 
-                        "button[aria-label='Review'][data-test-id='reviewDuplicates']"
-                    ))
-                )
-                continue
-        
-        print("\nBatch completed successfully!")
-        return True
-            
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
-        return False
-
-def automate_merge():
-    print("Starting automation - Chrome browser will open shortly...")
-    
+def setup_browser():
     # Get Chrome profile
     profile_dir, profile_name = list_and_select_profile()
     if not profile_dir:
         print("No profile selected. Exiting...")
-        return
+        return None
     
     print(f"\nLaunching Chrome with profile: {profile_name}")
     
@@ -276,61 +127,259 @@ def automate_merge():
     chrome_options = Options()
     chrome_options.add_argument(f'--user-data-dir=/Users/{os.getenv("USER")}/Library/Application Support/Google/Chrome')
     chrome_options.add_argument(f'--profile-directory={profile_dir}')
-    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    
+    # Add options to make automation smoother and more stealthy
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    
+    # Additional stealth options
+    chrome_options.add_argument('--disable-infobars')
+    chrome_options.add_argument('--start-maximized')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-web-security')
+    chrome_options.add_argument('--allow-running-insecure-content')
     
     # Setup Chrome driver with options
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=chrome_options
     )
+    
+    # Additional stealth settings after driver creation
+    driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+        "userAgent": 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    })
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
     driver.maximize_window()
+    return driver
+
+def get_domain_rank(domain):
+    """Rank domain extensions by commonality"""
+    domain = domain.lower()
+    ranks = {
+        '.com': 1,    # Most preferred
+        '.io': 2,
+        '.ai': 3,
+        '.net': 4,
+        '.org': 5,
+        '.co': 6,
+        '.tech': 7,
+        '.biz': 8     # Least preferred
+        # No .other rank - will default to picking left company
+    }
+    
+    for ext in ranks:
+        if domain.endswith(ext):
+            return ranks[ext]
+    return None  # Return None for unranked domains
+
+def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
+    try:
+        # Track companies we've already tried to merge
+        merged_companies = set()
+        processed_count = 0
+        
+        # Pre-compile XPath expressions for better performance
+        ERROR_MODAL_XPATH = "//h4[text()='All is not lost.']"
+        CANCEL_BUTTON_XPATH = "//div[contains(@class, 'modal-dialog')]//footer//button[contains(text(), 'Cancel')]"
+        
+        # Initial check for review buttons
+        review_buttons = WebDriverWait(driver, 3).until(
+            EC.presence_of_all_elements_located((
+                By.CSS_SELECTOR, 
+                "button[data-test-id='reviewDuplicates']"
+            ))
+        )
+        
+        initial_pairs = len(review_buttons)
+        print(f"Found {initial_pairs} pairs initially visible")
+        
+        print(f"Will process {pairs_to_process} pairs total")
+        proceed = input("Press Enter to continue or type 'n' to cancel: ")
+        if proceed.lower() == 'n':
+            return False
+            
+        # Process requested number of pairs
+        while processed_count < pairs_to_process:
+            try:
+                # Check if we need to wait for more rows
+                review_buttons = driver.find_elements(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']")
+                if not review_buttons:
+                    print("\nNo more duplicate pairs found. Processing complete.")
+                    break
+                
+                print(f"\nProcessing pair {processed_count + 1} of {pairs_to_process}...")
+                
+                # Get current review button and row
+                try:
+                    current_review_button = driver.find_element(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']")
+                    current_row = current_review_button.find_element(By.XPATH, "./ancestor::tr[1]")
+                except:
+                    # If not found immediately, wait and try again
+                    current_review_button = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((
+                            By.CSS_SELECTOR, 
+                            "button[data-test-id='reviewDuplicates']"
+                        ))
+                    )
+                    current_row = current_review_button.find_element(By.XPATH, "./ancestor::tr[1]")
+                
+                # Get company names efficiently
+                try:
+                    company1 = current_row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a").text
+                    company2 = current_row.find_element(By.CSS_SELECTOR, "td:nth-child(3) a").text
+                    company_pair = frozenset([company1, company2])
+                    print(f"Comparing: {company1} vs {company2}")
+                    
+                    if company_pair in merged_companies:
+                        print(f"⚠️ These companies were already processed")
+                        reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
+                        driver.execute_script("arguments[0].click();", reject_button)
+                        time.sleep(0.3)
+                        processed_count += 1
+                        continue
+                    
+                except Exception as e:
+                    print(f"Warning: Could not get company names: {str(e)}")
+                    company_pair = None
+                
+                # Scroll and click review button efficiently
+                driver.execute_script("""
+                    arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});
+                    arguments[0].click();
+                """, current_review_button)
+                time.sleep(0.5)  # Minimal wait for modal
+                
+                # Check for immediate error modal
+                try:
+                    error_modal = WebDriverWait(driver, 1).until(  # Reduced timeout
+                        EC.presence_of_element_located((By.XPATH, ERROR_MODAL_XPATH))
+                    )
+                    
+                    if error_modal:
+                        print("⚠️ Found error modal")
+                        cancel_button = driver.find_element(By.XPATH, CANCEL_BUTTON_XPATH)
+                        driver.execute_script("arguments[0].click();", cancel_button)
+                        time.sleep(0.3)
+                        
+                        reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
+                        driver.execute_script("arguments[0].click();", reject_button)
+                        time.sleep(0.3)
+                        continue
+                        
+                except TimeoutException:
+                    # No error modal - proceed with merge
+                    try:
+                        merge_button = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((
+                                By.CSS_SELECTOR,
+                                "button[data-test-id='merge-modal-lib_merge-button']"
+                            ))
+                        )
+                        driver.execute_script("arguments[0].click();", merge_button)
+                        time.sleep(1)  # Wait for potential error
+                        
+                        # Check for error after merge
+                        try:
+                            error_modal = driver.find_element(By.XPATH, ERROR_MODAL_XPATH)
+                            if error_modal.is_displayed():
+                                print("⚠️ Error after merge attempt")
+                                cancel_button = driver.find_element(By.XPATH, CANCEL_BUTTON_XPATH)
+                                driver.execute_script("arguments[0].click();", cancel_button)
+                                time.sleep(0.3)
+                                
+                                reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
+                                driver.execute_script("arguments[0].click();", reject_button)
+                                time.sleep(0.3)
+                            else:
+                                raise Exception("Modal not visible")
+                                
+                        except:
+                            print("✅ Merge completed successfully")
+                            if company_pair:
+                                merged_companies.add(company_pair)
+                            time.sleep(0.5)
+                            
+                    except Exception as e:
+                        print(f"Error during merge: {str(e)}")
+                        continue
+                
+                # After successful processing
+                processed_count += 1
+                
+                # Check remaining pairs periodically
+                if processed_count % 10 == 0:
+                    remaining = len(driver.find_elements(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']"))
+                    print(f"\n📊 Progress: {processed_count}/{pairs_to_process} pairs processed")
+                    print(f"🎯 {remaining} pairs currently visible")
+                
+            except Exception as e:
+                print(f"Error processing pair: {str(e)}")
+                proceed = input("Continue with next pair? (y/n): ")
+                if proceed.lower() != 'y':
+                    return False
+                continue
+        
+        print(f"\n✅ Processing complete! Processed {processed_count} pairs total.")
+        return True
+            
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        return False
+
+def automate_merge():
+    print("Starting automation - Chrome browser will open shortly...")
+    
+    # Setup browser once
+    driver = setup_browser()
+    if not driver:
+        return
     
     try:
-        # Initial page load
         print("\nOpening HubSpot duplicates page...")
-        driver.get("https://app.hubspot.com/duplicates/22104039/companies?currentPage=1")
+        driver.get("https://app.hubspot.com/duplicates/22104039/companies")
         
         print("\nWaiting for you to log in manually and navigate to the duplicates page...")
         print("Please log in through the browser if needed.")
         
-        # Wait for initial login/navigation
-        while True:
-            current_url = driver.current_url
-            if "duplicates" in current_url and not "login" in current_url:
-                break
-            time.sleep(2)
-        
-        print("\nDetected that you're on the duplicates page!")
+        # More efficient page load check
+        WebDriverWait(driver, 60).until(
+            lambda x: "duplicates" in x.current_url and "login" not in x.current_url
+        )
         
         # Main processing loop
         while True:
+            print("\nDetected that you're on the duplicates page!")
             pairs_to_process = get_user_input()
-            process_duplicates(driver, pairs_to_process)
+            
+            success = process_duplicates(driver, pairs_to_process)
+            
+            if not success:
+                print("\nProcessing stopped due to an error or user request.")
             
             # Ask if user wants to process more
-            more = input("\nWould you like to process more duplicates? (y/n): ")
-            if more.lower() != 'y':
+            another_batch = input("\nWould you like to process another batch? (y/n): ")
+            if another_batch.lower() != 'y':
                 break
             
-            # Refresh page before next batch
-            print("\nRefreshing page for next batch...")
+            # Refresh the page to get updated list of duplicates
+            print("\nRefreshing page to get updated duplicate list...")
             driver.refresh()
-            time.sleep(3)
+            # Wait for page to be interactive rather than using sleep
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']"))
+            )
         
-    except KeyboardInterrupt:
-        print("\nExiting...")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     finally:
-        if 'driver' in locals():
-            choice = input("\nWould you like to keep the browser open? (y/n): ")
-            if choice.lower() != 'y':
-                driver.quit()
-                print("Browser closed.")
-            else:
-                print("Browser will remain open. You can continue using it manually.")
+        keep_open = input("\nWould you like to keep the browser open? (y/n): ")
+        if keep_open.lower() != 'y':
+            driver.quit()
+        else:
+            print("\nBrowser will remain open. You can close it manually when done.")
 
 if __name__ == "__main__":
     automate_merge() 
