@@ -9,6 +9,7 @@ import time
 import os
 import json
 import psutil
+from selenium.common.exceptions import TimeoutException
 
 def kill_existing_chrome():
     """Kill any existing Chrome processes"""
@@ -174,8 +175,11 @@ def get_domain_rank(domain):
             return ranks[ext]
     return None  # Return None for unranked domains
 
-def process_duplicates(driver, pairs_to_process):
+def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
     try:
+        # Track companies we've already tried to merge
+        merged_companies = set()
+        
         # Find all Review buttons using the exact attributes from your HTML
         review_buttons = WebDriverWait(driver, 10).until(
             EC.presence_of_all_elements_located((
@@ -200,178 +204,190 @@ def process_duplicates(driver, pairs_to_process):
         for i in range(pairs_to_process):
             try:
                 print(f"\nProcessing pair {i + 1} of {pairs_to_process}...")
-                print("Scrolling to Review button...")
                 
-                driver.execute_script("arguments[0].scrollIntoView(true);", review_buttons[i])
+                # Wait for the current review button to be present and visible
+                current_review_button = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, f"button[aria-label='Review'][data-test-id='reviewDuplicates']"))
+                )
+                
+                # Get the current row containing the review button
+                current_row = current_review_button.find_element(By.XPATH, ".//ancestor::tr")
+                
+                # Get company names first
+                try:
+                    company1 = current_row.find_element(By.XPATH, ".//td[2]//div/div[2]/a").text
+                    company2 = current_row.find_element(By.XPATH, ".//td[3]//div/div[2]/a").text
+                    company_pair = frozenset([company1, company2])
+                    print(f"Comparing: {company1} vs {company2}")
+                    
+                    # Check if we've already tried to merge these companies
+                    if company_pair in merged_companies:
+                        print(f"⚠️ These companies ({company1} vs {company2}) were already processed in a previous merge")
+                        try:
+                            # Find reject button using data-test-id
+                            reject_button = WebDriverWait(current_row, 10).until(
+                                EC.element_to_be_clickable((
+                                    By.CSS_SELECTOR, 
+                                    "button[data-test-id='rejectButton']"
+                                ))
+                            )
+                            print("Auto-rejecting duplicate merge attempt...")
+                            driver.execute_script("arguments[0].click();", reject_button)
+                            time.sleep(1)
+                            continue
+                        except Exception as e:
+                            print(f"Error finding reject button: {str(e)}")
+                            try:
+                                # Try alternative method using XPath
+                                reject_button = current_row.find_element(
+                                    By.XPATH,
+                                    ".//button[contains(@class, 'private-button') and .//i18n-string[text()='Reject']]"
+                                )
+                                print("Found reject button using alternative method...")
+                                driver.execute_script("arguments[0].click();", reject_button)
+                                time.sleep(1)
+                                continue
+                            except Exception as e:
+                                print(f"Could not find reject button for {company1} vs {company2} using any method")
+                                continue
+                    
+                except Exception as e:
+                    print("Warning: Could not get company names")
+                    company1 = "Unknown"
+                    company2 = "Unknown"
+                    company_pair = None
+                
+                print("Scrolling to Review button...")
+                driver.execute_script("arguments[0].scrollIntoView(true);", current_review_button)
                 time.sleep(2)
                 
                 print("Clicking Review button...")
-                review_buttons[i].click()
+                current_review_button.click()
+                time.sleep(2)  # Wait for modal to appear
                 
-                # Wait for the merge dialog to appear and be fully loaded
-                time.sleep(3)  # Increased wait time
-                
+                # Check for "All is not lost" error modal
                 try:
-                    # Wait explicitly for the contact numbers to be visible
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.XPATH, "//dt[contains(text(), 'Number of Associated Contacts')]"))
+                    error_heading = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, "//h4[text()='All is not lost.']"))
                     )
                     
-                    # Find both contact number elements using more reliable XPaths
-                    contact_number1 = driver.find_element(
-                        By.XPATH,
-                        "//div[contains(@class, 'modal-dialog')]//div[contains(@class, 'UIFlex')]//div[1]//dt[contains(text(), 'Number of Associated Contacts')]/following-sibling::dd//span[last()]"
+                    if error_heading:
+                        print("⚠️ Found 'All is not lost' error modal - companies were already merged")
+                        # Click Cancel button in the error modal
+                        cancel_button = driver.find_element(
+                            By.XPATH,
+                            "//div[contains(@class, 'modal-dialog')]//footer//button[2]"
+                        )
+                        print("Clicking Cancel button...")
+                        driver.execute_script("arguments[0].click();", cancel_button)
+                        time.sleep(1)
+                        
+                        # Now find and click reject button using data-test-id
+                        try:
+                            reject_button = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((
+                                    By.CSS_SELECTOR,
+                                    "button[data-test-id='rejectButton']"
+                                ))
+                            )
+                            print(f"Clicking Reject button for {company1} vs {company2}...")
+                            driver.execute_script("arguments[0].click();", reject_button)
+                            time.sleep(1)
+                        except:
+                            print("Could not find reject button with data-test-id, trying alternative method...")
+                            try:
+                                # Try finding by XPath with text content
+                                reject_button = current_row.find_element(
+                                    By.XPATH,
+                                    ".//button[contains(@class, 'private-button') and .//i18n-string[text()='Reject']]"
+                                )
+                                print(f"Clicking Reject button (alternative method) for {company1} vs {company2}...")
+                                driver.execute_script("arguments[0].click();", reject_button)
+                                time.sleep(1)
+                            except Exception as e:
+                                print(f"Could not find reject button using any method: {str(e)}")
+                                continue
+                        
+                except Exception as e:
+                    # No error modal found, proceed with normal merge flow
+                    pass
+                
+                # Normal merge flow continues...
+                try:
+                    # Click the Merge button
+                    merge_button = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((
+                            By.XPATH,
+                            "//div[contains(@class, 'modal-dialog')]//footer//button[1]"
+                        ))
                     )
+                    print("🔄 Clicking merge button...")
+                    driver.execute_script("arguments[0].click();", merge_button)
                     
-                    contact_number2 = driver.find_element(
-                        By.XPATH,
-                        "//div[contains(@class, 'modal-dialog')]//div[contains(@class, 'UIFlex')]//div[2]//dt[contains(text(), 'Number of Associated Contacts')]/following-sibling::dd//span[last()]"
-                    )
+                    # Wait a moment for first modal to close and potential error modal to appear
+                    time.sleep(3)
                     
-                    # Extract and compare the numbers
-                    num1 = int(contact_number1.text)
-                    num2 = int(contact_number2.text)
-                    
-                    # Get domain extensions for tie-breaker
+                    # Check for error modal that appears after merge attempt
                     try:
-                        # Wait for domains to be visible
-                        WebDriverWait(driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "small.private-microcopy"))
-                        )
-                        
-                        # Get domains using more specific selectors
-                        domain1 = driver.find_element(
-                            By.XPATH,
-                            "//div[contains(@class, 'modal-dialog')]//div[2]/div/div[1]//div[contains(@class, 'private-selectable-box')]//small[contains(@class, 'private-microcopy')]"
-                        ).text.strip()
-                        
-                        domain2 = driver.find_element(
-                            By.XPATH,
-                            "//div[contains(@class, 'modal-dialog')]//div[2]/div/div[2]//div[contains(@class, 'private-selectable-box')]//small[contains(@class, 'private-microcopy')]"
-                        ).text.strip()
-                        
-                        # Print raw HTML for debugging domain elements
-                        print("\n🔍 Domain Elements HTML:")
-                        domain1_elem = driver.find_element(
-                            By.XPATH,
-                            "//div[contains(@class, 'modal-dialog')]//div[2]/div/div[1]//div[contains(@class, 'private-selectable-box')]"
-                        )
-                        domain2_elem = driver.find_element(
-                            By.XPATH,
-                            "//div[contains(@class, 'modal-dialog')]//div[2]/div/div[2]//div[contains(@class, 'private-selectable-box')]"
-                        )
-                        print("Left company HTML:", domain1_elem.get_attribute('innerHTML'))
-                        print("Right company HTML:", domain2_elem.get_attribute('innerHTML'))
-                        
-                    except Exception as e:
-                        print(f"Error getting domains: {str(e)}")
-                        domain1 = ""
-                        domain2 = ""
-                    
-                    # Print raw values for debugging
-                    print("\n🔍 Debug Info:")
-                    print(f"Raw Left Number Text: '{contact_number1.text}'")
-                    print(f"Raw Right Number Text: '{contact_number2.text}'")
-                    print(f"Raw Left Domain: '{domain1}'")
-                    print(f"Raw Right Domain: '{domain2}'")
-                    
-                    # Determine which record to pick
-                    pick_second = False
-                    if num2 > num1:
-                        pick_second = True
-                    elif num1 == num2:
-                        # If tie, compare domain extensions
-                        rank1 = get_domain_rank(domain1)
-                        rank2 = get_domain_rank(domain2)
-                        
-                        print("\n🌐 Domain Ranking Debug:")
-                        print(f"Left domain ({domain1}) rank: {rank1}")
-                        print(f"Right domain ({domain2}) rank: {rank2}")
-                        
-                        # Only pick second if both domains are ranked and second is better
-                        if rank1 is not None and rank2 is not None and rank2 < rank1:
-                            pick_second = True
-                            print(f"Picking right company because {domain2} (rank {rank2}) is preferred over {domain1} (rank {rank1})")
-                        else:
-                            print(f"Keeping left company because {domain1} is {'equally or more preferred' if rank1 is not None else 'unranked'}")
-                    
-                    # Print comparison in a clear, easy to read format
-                    print("\n" + "=" * 70)
-                    print(f"📊 PROCESSING PAIR {i + 1} OF {pairs_to_process}")
-                    print("=" * 70)
-                    
-                    # Contact comparison
-                    print("\n📞 CONTACTS:")
-                    print(f"   Left:  {num1} contacts")
-                    print(f"   Right: {num2} contacts")
-                    winner = "RIGHT" if num2 > num1 else "LEFT" if num1 > num2 else "TIE"
-                    print(f"   Winner by contacts: {winner}")
-                    
-                    # Domain comparison
-                    print("\n🌐 DOMAINS:")
-                    print(f"   Left:  {domain1}")
-                    print(f"   Right: {domain2}")
-                    if num1 == num2:
-                        if rank1 is not None and rank2 is not None:
-                            domain_winner = "RIGHT" if rank2 < rank1 else "LEFT"
-                            print(f"   Winner by domain preference: {domain_winner}")
-                        else:
-                            print("   Using default: LEFT (unranked domains)")
-                    
-                    # Final decision
-                    print("\n🎯 DECISION:")
-                    print(f"   {'RIGHT' if pick_second else 'LEFT'} company will be primary")
-                    print("=" * 70)
-                    
-                    # Find and click the card automatically
-                    if pick_second:
-                        print("⚡ Selecting right company...")
-                        radio2 = driver.find_element(
-                            By.XPATH,
-                            "//div[contains(@class, 'modal-dialog')]//div[2]/div/div[2]//input[@type='radio']"
-                        )
-                        driver.execute_script("arguments[0].click();", radio2)
-                    else:
-                        print("⚡ Selecting left company...")
-                        radio1 = driver.find_element(
-                            By.XPATH,
-                            "//div[contains(@class, 'modal-dialog')]//div[2]/div/div[1]//input[@type='radio']"
-                        )
-                        driver.execute_script("arguments[0].click();", radio1)
-                    
-                    time.sleep(1)
-                    
-                    # Click the Merge button without confirmation
-                    try:
-                        merge_button = WebDriverWait(driver, 10).until(
-                            EC.element_to_be_clickable((
-                                By.XPATH,
-                                "//div[contains(@class, 'modal-dialog')]//footer//button[1]"
+                        # Wait specifically for the error modal
+                        error_modal = WebDriverWait(driver, 5).until(
+                            EC.presence_of_element_located((
+                                By.XPATH, 
+                                "//div[contains(@class, 'modal-dialog')]//h4[text()='All is not lost.']"
                             ))
                         )
-                        print("🔄 Merging...")
-                        driver.execute_script("arguments[0].click();", merge_button)
-                    except Exception as e:
-                        try:
-                            merge_button = driver.find_element(
-                                By.CSS_SELECTOR,
-                                "button[data-test-id='merge-modal-lib_merge-button']"
+                        
+                        if error_modal:
+                            print("⚠️ Error modal appeared after merge attempt")
+                            
+                            # Wait for and click Cancel button in error modal
+                            cancel_button = WebDriverWait(driver, 5).until(
+                                EC.element_to_be_clickable((
+                                    By.XPATH,
+                                    "//div[contains(@class, 'modal-dialog')]//footer//button[contains(text(), 'Cancel')]"
+                                ))
                             )
-                            driver.execute_script("arguments[0].click();", merge_button)
-                        except Exception as e:
-                            raise Exception("Failed to click merge button")
-                    
-                    print("✅ Merge completed")
-                    time.sleep(3)  # Wait for merge to complete
-                    print("-" * 70 + "\n")
-                    
+                            print("Clicking Cancel button on error modal...")
+                            driver.execute_script("arguments[0].click();", cancel_button)
+                            time.sleep(2)  # Wait for modal to fully close
+                            
+                            # Now find and click reject button using data-test-id
+                            try:
+                                reject_button = WebDriverWait(driver, 5).until(
+                                    EC.element_to_be_clickable((
+                                        By.CSS_SELECTOR,
+                                        "button[data-test-id='rejectButton']"
+                                    ))
+                                )
+                                print(f"Clicking Reject button for {company1} vs {company2}...")
+                                driver.execute_script("arguments[0].click();", reject_button)
+                                time.sleep(1)
+                            except:
+                                print("Could not find reject button with data-test-id, trying alternative method...")
+                                try:
+                                    # Try finding by XPath with text content
+                                    reject_button = current_row.find_element(
+                                        By.XPATH,
+                                        ".//button[contains(@class, 'private-button') and .//i18n-string[text()='Reject']]"
+                                    )
+                                    print(f"Clicking Reject button (alternative method) for {company1} vs {company2}...")
+                                    driver.execute_script("arguments[0].click();", reject_button)
+                                    time.sleep(1)
+                                except Exception as e:
+                                    print(f"Could not find reject button using any method: {str(e)}")
+                                    continue
+                            
+                    except TimeoutException:
+                        # No error modal appeared - merge was successful
+                        print("✅ Merge completed successfully")
+                        if company_pair:
+                            merged_companies.add(company_pair)
+                        time.sleep(2)
+                        
                 except Exception as e:
-                    print(f"Error finding contact numbers: {str(e)}")
-                    proceed = input("Would you like to continue with the next pair? (y/n): ")
-                    if proceed.lower() != 'y':
-                        return False
+                    print(f"Error during merge process: {str(e)}")
                     continue
-            
+                
             except Exception as e:
                 print(f"Error processing pair {i + 1}: {str(e)}")
                 proceed = input("Would you like to continue with the next pair? (y/n): ")
@@ -395,7 +411,7 @@ def automate_merge():
     
     try:
         print("\nOpening HubSpot duplicates page...")
-        driver.get("REPLACE WITH YOUR HUBSPOT DUPLICATES PAGE URL")
+        driver.get("https://app.hubspot.com/duplicates/22104039/companies")
         
         print("\nWaiting for you to log in manually and navigate to the duplicates page...")
         print("Please log in through the browser if needed.")
