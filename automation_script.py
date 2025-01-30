@@ -178,70 +178,124 @@ def get_domain_rank(domain):
 def get_contact_counts(driver):
     """Get contact counts from both companies in merge modal"""
     try:
+        print("\n📊 Getting contact counts...")
+        # Wait for modal to be fully loaded first
+        print("  Waiting for modal to be fully loaded...")
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal"))
+        )
+        print("  Modal loaded")
+        
         # Wait for the contact count elements to be present
+        print("  Waiting for contact count elements...")
         contact_elements = WebDriverWait(driver, 5).until(
             EC.presence_of_all_elements_located((
                 By.XPATH,
-                "//div[contains(@class, 'merge-select-object')]//div[contains(text(), 'Associated contacts')]/following-sibling::div"
+                "//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')]"
             ))
         )
         
         if len(contact_elements) != 2:
-            print("⚠️ Could not find contact counts for both companies")
+            print(f"  ⚠️ Expected 2 contact elements, found {len(contact_elements)}")
             return None, None
         
-        # Extract numbers from text (e.g., "5 contacts" -> 5)
-        left_contacts = int(contact_elements[0].text.split()[0])
-        right_contacts = int(contact_elements[1].text.split()[0])
+        print("\n  Found contact elements:")
+        for i, element in enumerate(contact_elements):
+            print(f"    Element {i+1}: '{element.text}'")
         
-        print(f"Left company contacts: {left_contacts}")
-        print(f"Right company contacts: {right_contacts}")
+        # Extract numbers from text, handling '--' as 0
+        try:
+            left_text = contact_elements[0].text.strip()
+            left_contacts = 0 if left_text == '--' else int(left_text)
+            print(f"    ✅ Left contacts: {left_contacts}")
+        except ValueError as e:
+            print(f"    ❌ Error parsing left contacts: '{left_text}' - {str(e)}")
+            return None, None
+            
+        try:
+            right_text = contact_elements[1].text.strip()
+            right_contacts = 0 if right_text == '--' else int(right_text)
+            print(f"    ✅ Right contacts: {right_contacts}")
+        except ValueError as e:
+            print(f"    ❌ Error parsing right contacts: '{right_text}' - {str(e)}")
+            return None, None
+        
+        print(f"\n  Final Results:")
+        print(f"    Left company: {left_contacts} contacts")
+        print(f"    Right company: {right_contacts} contacts")
         
         return left_contacts, right_contacts
         
     except Exception as e:
-        print(f"Error getting contact counts: {str(e)}")
+        print(f"  ❌ Error getting contact counts: {str(e)}")
         return None, None
 
 def get_current_selection(driver):
     """Get which company (left/right) is currently selected"""
     try:
+        print("\n🔍 Checking current selection...")
         # Wait for modal and boxes to be fully loaded
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box"))
+        print("  Waiting for selectable boxes to load...")
+        boxes = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box.private-selectable-button"))
         )
+        print(f"  Found {len(boxes)} selectable boxes")
         
-        # Check which box is selected using the class
-        boxes = driver.find_elements(By.CSS_SELECTOR, "div.private-selectable-box")
+        # Check which box is selected using aria-checked attribute
         for i, box in enumerate(boxes):
-            if 'private-selectable-box--selected' in box.get_attribute('class'):
-                return 'right' if i == 1 else 'left'
+            aria_checked = box.get_attribute('aria-checked')
+            print(f"  Box {i+1}: aria-checked = {aria_checked}")
+            if aria_checked == 'true':
+                result = 'right' if i == 1 else 'left'
+                print(f"  ✅ Found selection: {result.upper()} box is selected")
+                return result
+        print("  ⚠️ No box found with aria-checked='true', defaulting to LEFT")
         return 'left'  # Default to left if can't determine
     except Exception as e:
-        print(f"Error getting current selection: {str(e)}")
+        print(f"  ❌ Error getting current selection: {str(e)}")
         return 'left'  # Default to left if can't determine
 
 def select_primary_company(driver, select_right):
     """Select either the left or right company as primary"""
     try:
-        # Wait for boxes to be clickable
+        print("\n🎯 Attempting to select primary company...")
+        desired = "RIGHT" if select_right else "LEFT"
+        print(f"  Target: {desired} company")
+        
+        # Wait for the selectable boxes to be present
+        print("  Waiting for selectable boxes to load...")
         boxes = WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box"))
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box.private-selectable-button"))
         )
+        print(f"  Found {len(boxes)} selectable boxes")
+        
         if len(boxes) != 2:
+            print(f"  ❌ Error: Expected 2 boxes, found {len(boxes)}")
             raise Exception("Could not find both company boxes")
             
         # Select the target box
         target_box = boxes[1] if select_right else boxes[0]
+        print(f"  Initial aria-checked state: {target_box.get_attribute('aria-checked')}")
         
-        # Click the box and wait for selection to update
-        driver.execute_script("arguments[0].click();", target_box)
-        WebDriverWait(driver, 3).until(
-            lambda x: ('private-selectable-box--selected' in target_box.get_attribute('class'))
-        )
+        # Force scroll into view and click
+        print("  Attempting to click box...")
+        driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", target_box)
+        print("  Click executed")
+        
+        # Wait for selection to update and verify
+        print("  Waiting for selection to update...")
+        try:
+            WebDriverWait(driver, 3).until(
+                lambda x: target_box.get_attribute('aria-checked') == 'true'
+            )
+            print(f"  ✅ Selection verified: {desired} box is now selected")
+        except TimeoutException:
+            print(f"  ❌ Selection failed to update after 3 seconds")
+            print(f"  Final aria-checked state: {target_box.get_attribute('aria-checked')}")
+            raise Exception("Selection failed to update")
         
     except Exception as e:
-        print(f"Error selecting primary company: {str(e)}")
+        print(f"  ❌ Error selecting primary company: {str(e)}")
         raise e
 
 def get_company_domains(driver):
