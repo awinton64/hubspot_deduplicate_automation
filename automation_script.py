@@ -175,145 +175,248 @@ def get_domain_rank(domain):
             return ranks[ext]
     return None  # Return None for unranked domains
 
-def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
+def get_contact_counts(driver):
+    """Get contact counts from both companies in merge modal"""
     try:
-        # Track companies we've already tried to merge
-        merged_companies = set()
-        processed_count = 0
-        
-        # Pre-compile XPath expressions for better performance
-        ERROR_MODAL_XPATH = "//h4[text()='All is not lost.']"
-        CANCEL_BUTTON_XPATH = "//div[contains(@class, 'modal-dialog')]//footer//button[contains(text(), 'Cancel')]"
-        
-        # Initial check for review buttons
-        review_buttons = WebDriverWait(driver, 3).until(
+        # Wait for the contact count elements to be present
+        contact_elements = WebDriverWait(driver, 5).until(
             EC.presence_of_all_elements_located((
-                By.CSS_SELECTOR, 
-                "button[data-test-id='reviewDuplicates']"
+                By.XPATH,
+                "//div[contains(@class, 'merge-select-object')]//div[contains(text(), 'Associated contacts')]/following-sibling::div"
             ))
         )
         
-        initial_pairs = len(review_buttons)
-        print(f"Found {initial_pairs} pairs initially visible")
+        if len(contact_elements) != 2:
+            print("⚠️ Could not find contact counts for both companies")
+            return None, None
         
-        print(f"Will process {pairs_to_process} pairs total")
-        proceed = input("Press Enter to continue or type 'n' to cancel: ")
-        if proceed.lower() == 'n':
-            return False
+        # Extract numbers from text (e.g., "5 contacts" -> 5)
+        left_contacts = int(contact_elements[0].text.split()[0])
+        right_contacts = int(contact_elements[1].text.split()[0])
+        
+        print(f"Left company contacts: {left_contacts}")
+        print(f"Right company contacts: {right_contacts}")
+        
+        return left_contacts, right_contacts
+        
+    except Exception as e:
+        print(f"Error getting contact counts: {str(e)}")
+        return None, None
+
+def get_current_selection(driver):
+    """Get which company (left/right) is currently selected"""
+    try:
+        # Wait for modal and boxes to be fully loaded
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box"))
+        )
+        
+        # Check which box is selected using the class
+        boxes = driver.find_elements(By.CSS_SELECTOR, "div.private-selectable-box")
+        for i, box in enumerate(boxes):
+            if 'private-selectable-box--selected' in box.get_attribute('class'):
+                return 'right' if i == 1 else 'left'
+        return 'left'  # Default to left if can't determine
+    except Exception as e:
+        print(f"Error getting current selection: {str(e)}")
+        return 'left'  # Default to left if can't determine
+
+def select_primary_company(driver, select_right):
+    """Select either the left or right company as primary"""
+    try:
+        # Wait for boxes to be clickable
+        boxes = WebDriverWait(driver, 10).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box"))
+        )
+        if len(boxes) != 2:
+            raise Exception("Could not find both company boxes")
             
-        # Process requested number of pairs
+        # Select the target box
+        target_box = boxes[1] if select_right else boxes[0]
+        
+        # Click the box and wait for selection to update
+        driver.execute_script("arguments[0].click();", target_box)
+        WebDriverWait(driver, 3).until(
+            lambda x: ('private-selectable-box--selected' in target_box.get_attribute('class'))
+        )
+        
+    except Exception as e:
+        print(f"Error selecting primary company: {str(e)}")
+        raise e
+
+def get_company_domains(driver):
+    """Get domains from both companies in merge modal"""
+    try:
+        # Find domain elements in the merge modal
+        domain_elements = WebDriverWait(driver, 5).until(
+            EC.presence_of_all_elements_located((
+                By.XPATH,
+                "//div[contains(@class, 'merge-select-object')]//div[contains(text(), 'Domain name')]/following-sibling::div"
+            ))
+        )
+        
+        if len(domain_elements) != 2:
+            print("⚠️ Could not find domains for both companies")
+            return None, None
+        
+        left_domain = domain_elements[0].text.strip()
+        right_domain = domain_elements[1].text.strip()
+        
+        print(f"Left domain: {left_domain}")
+        print(f"Right domain: {right_domain}")
+        
+        return left_domain, right_domain
+        
+    except Exception as e:
+        print(f"Error getting company domains: {str(e)}")
+        return None, None
+
+def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
+    try:
+        merged_companies = set()
+        processed_count = 0
+        
         while processed_count < pairs_to_process:
             try:
-                # Check if we need to wait for more rows
-                review_buttons = driver.find_elements(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']")
-                if not review_buttons:
-                    print("\nNo more duplicate pairs found. Processing complete.")
-                    break
-                
                 print(f"\nProcessing pair {processed_count + 1} of {pairs_to_process}...")
                 
-                # Get current review button and row
+                # Get current row and company names using data-test-id
+                current_row = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'tr[data-test-id^="doppel-row-"]'))
+                )
+                company1 = current_row.find_element(By.CSS_SELECTOR, 'td[data-test-id="doppelganger_ui-record-cell"] a[data-test-id="recordLink"]').text
+                company2 = current_row.find_elements(By.CSS_SELECTOR, 'td[data-test-id="doppelganger_ui-record-cell"] a[data-test-id="recordLink"]')[1].text
+                company_pair = frozenset([company1, company2])
+                
+                print(f"Comparing: {company1} vs {company2}")
+                
+                # Step 1: Check if already processed
+                if company_pair in merged_companies:
+                    print(f"⚠️ These companies were already processed")
+                    reject_button = current_row.find_element(By.XPATH, ".//button[.//i18n-string[@data-key='duplicates.table.buttons.reject']]")
+                    driver.execute_script("arguments[0].click();", reject_button)
+                    WebDriverWait(driver, 3).until(
+                        EC.staleness_of(reject_button)
+                    )
+                    processed_count += 1
+                    continue
+                
+                # Step 2: Click Review to open modal
+                print("\nOpening review modal...")
+                review_button = current_row.find_element(By.XPATH, ".//button[.//i18n-string[@data-key='duplicates.openReviewModal']]")
+                driver.execute_script("arguments[0].click();", review_button)
+                
+                # Wait for modal to be fully loaded by checking for contact counts
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//dt[text()='Number of Associated Contacts']"))
+                )
+                
+                # Step 3: Extract and compare information
+                print("\nExtracting company information...")
+                
+                # Get contact counts using more reliable selectors
+                left_contacts = int(WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH,
+                        "//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')]"))
+                ).text)
+                
+                right_contacts = int(WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH,
+                        "(//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')])[2]"))
+                ).text)
+                
+                print(f"\nContact Counts:")
+                print(f"Left company: {left_contacts} contacts")
+                print(f"Right company: {right_contacts} contacts")
+                
+                # Get domains using more reliable selectors
                 try:
-                    current_review_button = driver.find_element(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']")
-                    current_row = current_review_button.find_element(By.XPATH, "./ancestor::tr[1]")
+                    left_domain = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH,
+                            "//div[contains(@class, 'private-selectable-box--selected')]//small[contains(@class, 'private-microcopy')]"))
+                    ).text.strip('--')
                 except:
-                    # If not found immediately, wait and try again
-                    current_review_button = WebDriverWait(driver, 3).until(
-                        EC.element_to_be_clickable((
-                            By.CSS_SELECTOR, 
-                            "button[data-test-id='reviewDuplicates']"
-                        ))
-                    )
-                    current_row = current_review_button.find_element(By.XPATH, "./ancestor::tr[1]")
-                
-                # Get company names efficiently
+                    left_domain = None
+                    
                 try:
-                    company1 = current_row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a").text
-                    company2 = current_row.find_element(By.CSS_SELECTOR, "td:nth-child(3) a").text
-                    company_pair = frozenset([company1, company2])
-                    print(f"Comparing: {company1} vs {company2}")
-                    
-                    if company_pair in merged_companies:
-                        print(f"⚠️ These companies were already processed")
-                        reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
-                        driver.execute_script("arguments[0].click();", reject_button)
-                        time.sleep(0.3)
-                        processed_count += 1
-                        continue
-                    
-                except Exception as e:
-                    print(f"Warning: Could not get company names: {str(e)}")
-                    company_pair = None
+                    right_domain = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH,
+                            "(//div[contains(@class, 'private-selectable-box')]//small[contains(@class, 'private-microcopy')])[2]"))
+                    ).text.strip('--')
+                except:
+                    right_domain = None
                 
-                # Scroll and click review button efficiently
-                driver.execute_script("""
-                    arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});
-                    arguments[0].click();
-                """, current_review_button)
-                time.sleep(0.5)  # Minimal wait for modal
+                left_rank = get_domain_rank(left_domain) if left_domain else None
+                right_rank = get_domain_rank(right_domain) if right_domain else None
                 
-                # Check for immediate error modal
-                try:
-                    error_modal = WebDriverWait(driver, 1).until(  # Reduced timeout
-                        EC.presence_of_element_located((By.XPATH, ERROR_MODAL_XPATH))
-                    )
-                    
-                    if error_modal:
-                        print("⚠️ Found error modal")
-                        cancel_button = driver.find_element(By.XPATH, CANCEL_BUTTON_XPATH)
-                        driver.execute_script("arguments[0].click();", cancel_button)
-                        time.sleep(0.3)
-                        
-                        reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
-                        driver.execute_script("arguments[0].click();", reject_button)
-                        time.sleep(0.3)
-                        continue
-                        
-                except TimeoutException:
-                    # No error modal - proceed with merge
-                    try:
-                        merge_button = WebDriverWait(driver, 3).until(
-                            EC.element_to_be_clickable((
-                                By.CSS_SELECTOR,
-                                "button[data-test-id='merge-modal-lib_merge-button']"
-                            ))
-                        )
-                        driver.execute_script("arguments[0].click();", merge_button)
-                        time.sleep(1)  # Wait for potential error
-                        
-                        # Check for error after merge
-                        try:
-                            error_modal = driver.find_element(By.XPATH, ERROR_MODAL_XPATH)
-                            if error_modal.is_displayed():
-                                print("⚠️ Error after merge attempt")
-                                cancel_button = driver.find_element(By.XPATH, CANCEL_BUTTON_XPATH)
-                                driver.execute_script("arguments[0].click();", cancel_button)
-                                time.sleep(0.3)
-                                
-                                reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
-                                driver.execute_script("arguments[0].click();", reject_button)
-                                time.sleep(0.3)
+                print(f"\nDomains:")
+                print(f"Left company: {left_domain} (rank: {left_rank})")
+                print(f"Right company: {right_domain} (rank: {right_rank})")
+                
+                # Step 4: Make selection decision
+                print("\nMaking selection decision...")
+                select_right = False
+                
+                if left_contacts is not None and right_contacts is not None:
+                    if right_contacts > left_contacts * 1.5:
+                        print("Right company has 50% more contacts")
+                        select_right = True
+                    elif left_contacts > right_contacts * 1.5:
+                        print("Left company has 50% more contacts")
+                        select_right = False
+                    else:
+                        print("Contact counts similar, checking domains...")
+                        if left_rank and right_rank:
+                            if right_rank < left_rank:
+                                print("Right company has better domain extension")
+                                select_right = True
+                            elif left_rank < right_rank:
+                                print("Left company has better domain extension")
+                                select_right = False
                             else:
-                                raise Exception("Modal not visible")
-                                
-                        except:
-                            print("✅ Merge completed successfully")
-                            if company_pair:
-                                merged_companies.add(company_pair)
-                            time.sleep(0.5)
-                            
-                    except Exception as e:
-                        print(f"Error during merge: {str(e)}")
-                        continue
+                                print("Domain ranks equal, keeping left company")
                 
-                # After successful processing
+                # Step 5: Select company and confirm
+                current = get_current_selection(driver)
+                desired = 'right' if select_right else 'left'
+                
+                if current != desired:
+                    print(f"\nChanging selection from {current} to {desired} company")
+                    select_primary_company(driver, select_right)
+                else:
+                    print(f"\nKeeping current selection ({current} company)")
+                
+                # Step 6: Ask for confirmation
+                print("\nCurrent Selection Summary:")
+                print("-" * 50)
+                print(f"Selected Company: {desired.upper()}")
+                print(f"Contact Counts: Left ({left_contacts}) vs Right ({right_contacts})")
+                print(f"Domains: Left ({left_domain}) vs Right ({right_domain})")
+                print("-" * 50)
+                
+                proceed = input("\nIs this selection correct? (y/n): ")
+                if proceed.lower() != 'y':
+                    print("Canceling merge...")
+                    cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
+                    driver.execute_script("arguments[0].click();", cancel_button)
+                    continue
+                
+                # Step 7: Execute merge
+                print("\nExecuting merge...")
+                merge_button = WebDriverWait(driver, 3).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-test-id='merge-modal-lib_merge-button']"))
+                )
+                driver.execute_script("arguments[0].click();", merge_button)
+                
+                # Wait for merge to complete by checking for button staleness
+                WebDriverWait(driver, 10).until(
+                    EC.staleness_of(merge_button)
+                )
+                
+                # Add to processed set and increment counter
+                merged_companies.add(company_pair)
                 processed_count += 1
-                
-                # Check remaining pairs periodically
-                if processed_count % 10 == 0:
-                    remaining = len(driver.find_elements(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']"))
-                    print(f"\n📊 Progress: {processed_count}/{pairs_to_process} pairs processed")
-                    print(f"🎯 {remaining} pairs currently visible")
+                print("✅ Merge completed successfully")
                 
             except Exception as e:
                 print(f"Error processing pair: {str(e)}")
@@ -322,7 +425,6 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                     return False
                 continue
         
-        print(f"\n✅ Processing complete! Processed {processed_count} pairs total.")
         return True
             
     except Exception as e:
