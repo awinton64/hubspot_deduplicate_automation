@@ -1,6 +1,87 @@
-# HubSpot Company Merge Automation 🤖
+# HubSpot Duplicate Company Automation
 
-A Python automation script that helps you merge duplicate companies in HubSpot without needing Operations Hub. Save hours of manual work by automating the company merge process.
+Automates the process of merging or rejecting duplicate companies in HubSpot.
+
+## Features
+
+- Automated duplicate company processing
+- Smart handling of merge errors and conflicts
+- Efficient tracking of already processed companies
+- Performance optimized with minimal wait times
+- Reliable error recovery and state management
+- Support for multiple Chrome profiles
+- Manual login support for security
+
+## Performance Optimizations
+
+- Minimal wait times (0.3-1.5s) for maximum efficiency
+- Pre-compiled XPath expressions
+- Efficient element finding strategies
+- Smart page load detection
+- Combined JavaScript operations
+- Explicit waits instead of sleep timers
+
+## Requirements
+
+- Python 3.7+
+- Chrome browser
+- macOS (currently optimized for)
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/hubspot_deduplicate_automation.git
+cd hubspot_deduplicate_automation
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+
+1. Run the script:
+```bash
+python automation_script.py
+```
+
+2. Select your Chrome profile when prompted
+
+3. Log in to HubSpot manually when the browser opens
+
+4. Enter the number of duplicate pairs you want to process
+
+The script will automatically:
+- Process the specified number of pairs
+- Handle merge errors gracefully
+- Track already processed companies
+- Allow you to process multiple batches
+
+## Error Handling
+
+The script handles several scenarios:
+- Already merged companies
+- Unmergeable companies
+- Network issues
+- Page load failures
+- Element interaction failures
+
+## Configuration
+
+No configuration needed - the script automatically:
+- Detects Chrome profiles
+- Handles login security
+- Manages browser state
+- Tracks processed companies
+
+## Notes
+
+- The script uses JavaScript execution for better performance
+- Wait times are optimized but can be adjusted if needed
+- Error recovery is automatic in most cases
+- Manual intervention is requested only when necessary
 
 ## Why This Tool? 🎯
 
@@ -20,44 +101,6 @@ A Python automation script that helps you merge duplicate companies in HubSpot w
 - 📊 Clear console output showing comparison and decisions
 - ⚡ Fully automated merging with minimal user interaction
 - 🔒 Safe and secure (runs locally, no API keys needed)
-
-## Requirements 📋
-
-- Python 3.6+
-- Chrome Browser
-- macOS (for current version - Windows not supported)
-
-## Installation 🛠️
-
-1. Clone this repository:
-```bash
-git clone [repository-url]
-cd hubspot_deduplicate_automation
-```
-
-2. Install required packages:
-```bash
-pip install -r requirements.txt
-```
-
-## Usage 🚀
-
-1. Run the script:
-```bash
-python automation_script.py or python3 automation_script.py
-```
-
-2. Select your Chrome profile when prompted
-
-3. Log into HubSpot in the opened browser (if needed)
-
-4. Enter the number of duplicate pairs you want to process
-
-5. Watch the magic happen! The script will:
-   - Compare duplicate companies
-   - Select the best primary record
-   - Merge automatically
-   - Show you what's happening at each step
 
 ## How It Works 🔍
 
