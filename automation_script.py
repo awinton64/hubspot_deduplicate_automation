@@ -180,8 +180,12 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
         # Track companies we've already tried to merge
         merged_companies = set()
         
+        # Pre-compile XPath expressions for better performance
+        ERROR_MODAL_XPATH = "//h4[text()='All is not lost.']"
+        CANCEL_BUTTON_XPATH = "//div[contains(@class, 'modal-dialog')]//footer//button[contains(text(), 'Cancel')]"
+        
         # Find all Review buttons using the exact attributes from your HTML
-        review_buttons = WebDriverWait(driver, 5).until(
+        review_buttons = WebDriverWait(driver, 3).until(  # Reduced timeout
             EC.presence_of_all_elements_located((
                 By.CSS_SELECTOR, 
                 "button[data-test-id='reviewDuplicates']"
@@ -199,24 +203,27 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
         proceed = input("Press Enter to continue or type 'n' to cancel: ")
         if proceed.lower() == 'n':
             return False
-        
+            
         # Process requested number of pairs
         for i in range(pairs_to_process):
             try:
                 print(f"\nProcessing pair {i + 1} of {pairs_to_process}...")
                 
-                # Wait for the current review button with shorter timeout
-                current_review_button = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((
-                        By.CSS_SELECTOR, 
-                        "button[data-test-id='reviewDuplicates']"
-                    ))
-                )
+                # Get current review button and row
+                try:
+                    current_review_button = driver.find_element(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']")
+                    current_row = current_review_button.find_element(By.XPATH, "./ancestor::tr[1]")
+                except:
+                    # If not found immediately, wait and try again
+                    current_review_button = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((
+                            By.CSS_SELECTOR, 
+                            "button[data-test-id='reviewDuplicates']"
+                        ))
+                    )
+                    current_row = current_review_button.find_element(By.XPATH, "./ancestor::tr[1]")
                 
-                # Get the current row containing the review button (optimized selector)
-                current_row = current_review_button.find_element(By.XPATH, "./ancestor::tr[1]")
-                
-                # Get company names with optimized selectors
+                # Get company names efficiently
                 try:
                     company1 = current_row.find_element(By.CSS_SELECTOR, "td:nth-child(2) a").text
                     company2 = current_row.find_element(By.CSS_SELECTOR, "td:nth-child(3) a").text
@@ -225,100 +232,75 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                     
                     if company_pair in merged_companies:
                         print(f"⚠️ These companies were already processed")
-                        try:
-                            reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
-                            print("Auto-rejecting duplicate merge attempt...")
-                            driver.execute_script("arguments[0].click();", reject_button)
-                            time.sleep(0.5)  # Reduced wait time
-                            continue
-                        except Exception as e:
-                            print(f"Error finding reject button: {str(e)}")
-                            continue
+                        reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
+                        driver.execute_script("arguments[0].click();", reject_button)
+                        time.sleep(0.3)  # Minimal wait
+                        continue
                     
                 except Exception as e:
-                    print("Warning: Could not get company names")
-                    company1 = "Unknown"
-                    company2 = "Unknown"
+                    print(f"Warning: Could not get company names: {str(e)}")
                     company_pair = None
                 
-                # Scroll and click review button
-                driver.execute_script("arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});", current_review_button)
-                time.sleep(0.5)  # Reduced from 2 to 0.5
-                driver.execute_script("arguments[0].click();", current_review_button)
-                time.sleep(1)  # Reduced from 2 to 1
+                # Scroll and click review button efficiently
+                driver.execute_script("""
+                    arguments[0].scrollIntoView({behavior: 'instant', block: 'center'});
+                    arguments[0].click();
+                """, current_review_button)
+                time.sleep(0.5)  # Minimal wait for modal
                 
                 # Check for immediate error modal
                 try:
-                    error_heading = WebDriverWait(driver, 2).until(
-                        EC.presence_of_element_located((
-                            By.XPATH, 
-                            "//h4[text()='All is not lost.']"
-                        ))
+                    error_modal = WebDriverWait(driver, 1).until(  # Reduced timeout
+                        EC.presence_of_element_located((By.XPATH, ERROR_MODAL_XPATH))
                     )
                     
-                    if error_heading:
+                    if error_modal:
                         print("⚠️ Found error modal")
-                        cancel_button = WebDriverWait(driver, 2).until(
-                            EC.element_to_be_clickable((
-                                By.XPATH,
-                                "//div[contains(@class, 'modal-dialog')]//footer//button[contains(text(), 'Cancel')]"
-                            ))
-                        )
+                        cancel_button = driver.find_element(By.XPATH, CANCEL_BUTTON_XPATH)
                         driver.execute_script("arguments[0].click();", cancel_button)
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         
                         reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
                         driver.execute_script("arguments[0].click();", reject_button)
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         continue
                         
                 except TimeoutException:
-                    pass
-                
-                # Normal merge flow
-                try:
-                    merge_button = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((
-                            By.CSS_SELECTOR,
-                            "button[data-test-id='merge-modal-lib_merge-button']"
-                        ))
-                    )
-                    driver.execute_script("arguments[0].click();", merge_button)
-                    time.sleep(1.5)  # Reduced from 3 to 1.5
-                    
-                    # Check for error after merge
+                    # No error modal - proceed with merge
                     try:
-                        error_modal = WebDriverWait(driver, 2).until(
-                            EC.presence_of_element_located((
-                                By.XPATH, 
-                                "//h4[text()='All is not lost.']"
+                        merge_button = WebDriverWait(driver, 3).until(
+                            EC.element_to_be_clickable((
+                                By.CSS_SELECTOR,
+                                "button[data-test-id='merge-modal-lib_merge-button']"
                             ))
                         )
+                        driver.execute_script("arguments[0].click();", merge_button)
+                        time.sleep(1)  # Wait for potential error
                         
-                        if error_modal:
-                            print("⚠️ Error after merge attempt")
-                            cancel_button = WebDriverWait(driver, 2).until(
-                                EC.element_to_be_clickable((
-                                    By.XPATH,
-                                    "//div[contains(@class, 'modal-dialog')]//footer//button[contains(text(), 'Cancel')]"
-                                ))
-                            )
-                            driver.execute_script("arguments[0].click();", cancel_button)
+                        # Check for error after merge
+                        try:
+                            error_modal = driver.find_element(By.XPATH, ERROR_MODAL_XPATH)
+                            if error_modal.is_displayed():
+                                print("⚠️ Error after merge attempt")
+                                cancel_button = driver.find_element(By.XPATH, CANCEL_BUTTON_XPATH)
+                                driver.execute_script("arguments[0].click();", cancel_button)
+                                time.sleep(0.3)
+                                
+                                reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
+                                driver.execute_script("arguments[0].click();", reject_button)
+                                time.sleep(0.3)
+                            else:
+                                raise Exception("Modal not visible")
+                                
+                        except:
+                            print("✅ Merge completed successfully")
+                            if company_pair:
+                                merged_companies.add(company_pair)
                             time.sleep(0.5)
                             
-                            reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
-                            driver.execute_script("arguments[0].click();", reject_button)
-                            time.sleep(0.5)
-                            
-                    except TimeoutException:
-                        print("✅ Merge completed successfully")
-                        if company_pair:
-                            merged_companies.add(company_pair)
-                        time.sleep(1)
-                        
-                except Exception as e:
-                    print(f"Error during merge: {str(e)}")
-                    continue
+                    except Exception as e:
+                        print(f"Error during merge: {str(e)}")
+                        continue
                 
             except Exception as e:
                 print(f"Error processing pair {i + 1}: {str(e)}")
@@ -348,11 +330,10 @@ def automate_merge():
         print("\nWaiting for you to log in manually and navigate to the duplicates page...")
         print("Please log in through the browser if needed.")
         
-        while True:
-            current_url = driver.current_url
-            if "duplicates" in current_url and not "login" in current_url:
-                break
-            time.sleep(2)  # Check every 2 seconds
+        # More efficient page load check
+        WebDriverWait(driver, 60).until(
+            lambda x: "duplicates" in x.current_url and "login" not in x.current_url
+        )
         
         # Main processing loop
         while True:
@@ -372,7 +353,10 @@ def automate_merge():
             # Refresh the page to get updated list of duplicates
             print("\nRefreshing page to get updated duplicate list...")
             driver.refresh()
-            time.sleep(3)
+            # Wait for page to be interactive rather than using sleep
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']"))
+            )
         
     except Exception as e:
         print(f"An error occurred: {str(e)}")
