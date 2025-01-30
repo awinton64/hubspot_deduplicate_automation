@@ -5,12 +5,15 @@ Automates the process of merging or rejecting duplicate companies in HubSpot.
 ## Features
 
 - Automated duplicate company processing
+- **Unlimited batch processing** - no 50-pair limit
+- Dynamic row processing as pairs are merged/rejected
 - Smart handling of merge errors and conflicts
 - Efficient tracking of already processed companies
 - Performance optimized with minimal wait times
 - Reliable error recovery and state management
 - Support for multiple Chrome profiles
 - Manual login support for security
+- Progress tracking and statistics
 
 ## Performance Optimizations
 
@@ -20,6 +23,7 @@ Automates the process of merging or rejecting duplicate companies in HubSpot.
 - Smart page load detection
 - Combined JavaScript operations
 - Explicit waits instead of sleep timers
+- Dynamic row detection and processing
 
 ## Requirements
 
@@ -52,12 +56,25 @@ python automation_script.py
 3. Log in to HubSpot manually when the browser opens
 
 4. Enter the number of duplicate pairs you want to process
+   - No limit on number of pairs
+   - Script will dynamically process new rows as they appear
+   - Progress updates every 10 pairs
 
 The script will automatically:
 - Process the specified number of pairs
 - Handle merge errors gracefully
 - Track already processed companies
+- Show progress and remaining pairs
 - Allow you to process multiple batches
+
+## Progress Tracking
+
+The script now provides:
+- Current pair number being processed
+- Total pairs processed so far
+- Number of pairs remaining visible
+- Progress updates every 10 pairs
+- Completion statistics
 
 ## Error Handling
 
@@ -67,6 +84,7 @@ The script handles several scenarios:
 - Network issues
 - Page load failures
 - Element interaction failures
+- Dynamic row updates
 
 ## Configuration
 
@@ -75,6 +93,7 @@ No configuration needed - the script automatically:
 - Handles login security
 - Manages browser state
 - Tracks processed companies
+- Handles dynamic content updates
 
 ## Notes
 
@@ -82,6 +101,7 @@ No configuration needed - the script automatically:
 - Wait times are optimized but can be adjusted if needed
 - Error recovery is automatic in most cases
 - Manual intervention is requested only when necessary
+- No artificial limits on batch size
 
 ## Why This Tool? 🎯
 
@@ -179,8 +199,7 @@ MIT License - feel free to use and modify as needed!
 
 ### Known Issues to Address
 - Companies without domains appearing in multiple merge pairs
-- Merge failures when company was already merged in previous pair
-- 50-pair batch limitation from HubSpot's interface
+- Merge failures when company was previously merged (now tracked and rejected)
 
 Feel free to contribute to any of these improvements!
 

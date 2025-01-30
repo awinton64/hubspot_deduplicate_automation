@@ -179,35 +179,38 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
     try:
         # Track companies we've already tried to merge
         merged_companies = set()
+        processed_count = 0
         
         # Pre-compile XPath expressions for better performance
         ERROR_MODAL_XPATH = "//h4[text()='All is not lost.']"
         CANCEL_BUTTON_XPATH = "//div[contains(@class, 'modal-dialog')]//footer//button[contains(text(), 'Cancel')]"
         
-        # Find all Review buttons using the exact attributes from your HTML
-        review_buttons = WebDriverWait(driver, 3).until(  # Reduced timeout
+        # Initial check for review buttons
+        review_buttons = WebDriverWait(driver, 3).until(
             EC.presence_of_all_elements_located((
                 By.CSS_SELECTOR, 
                 "button[data-test-id='reviewDuplicates']"
             ))
         )
         
-        total_pairs = len(review_buttons)
-        print(f"Found {total_pairs} total pairs")
+        initial_pairs = len(review_buttons)
+        print(f"Found {initial_pairs} pairs initially visible")
         
-        if pairs_to_process > total_pairs:
-            print(f"Warning: Only {total_pairs} pairs available. Will process all available pairs.")
-            pairs_to_process = total_pairs
-        
-        print(f"Will process {pairs_to_process} pairs")
+        print(f"Will process {pairs_to_process} pairs total")
         proceed = input("Press Enter to continue or type 'n' to cancel: ")
         if proceed.lower() == 'n':
             return False
             
         # Process requested number of pairs
-        for i in range(pairs_to_process):
+        while processed_count < pairs_to_process:
             try:
-                print(f"\nProcessing pair {i + 1} of {pairs_to_process}...")
+                # Check if we need to wait for more rows
+                review_buttons = driver.find_elements(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']")
+                if not review_buttons:
+                    print("\nNo more duplicate pairs found. Processing complete.")
+                    break
+                
+                print(f"\nProcessing pair {processed_count + 1} of {pairs_to_process}...")
                 
                 # Get current review button and row
                 try:
@@ -234,7 +237,8 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                         print(f"⚠️ These companies were already processed")
                         reject_button = current_row.find_element(By.CSS_SELECTOR, "button[data-test-id='rejectButton']")
                         driver.execute_script("arguments[0].click();", reject_button)
-                        time.sleep(0.3)  # Minimal wait
+                        time.sleep(0.3)
+                        processed_count += 1
                         continue
                     
                 except Exception as e:
@@ -302,13 +306,23 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                         print(f"Error during merge: {str(e)}")
                         continue
                 
+                # After successful processing
+                processed_count += 1
+                
+                # Check remaining pairs periodically
+                if processed_count % 10 == 0:
+                    remaining = len(driver.find_elements(By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']"))
+                    print(f"\n📊 Progress: {processed_count}/{pairs_to_process} pairs processed")
+                    print(f"🎯 {remaining} pairs currently visible")
+                
             except Exception as e:
-                print(f"Error processing pair {i + 1}: {str(e)}")
+                print(f"Error processing pair: {str(e)}")
                 proceed = input("Continue with next pair? (y/n): ")
                 if proceed.lower() != 'y':
                     return False
                 continue
         
+        print(f"\n✅ Processing complete! Processed {processed_count} pairs total.")
         return True
             
     except Exception as e:
