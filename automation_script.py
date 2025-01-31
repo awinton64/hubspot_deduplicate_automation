@@ -186,26 +186,77 @@ def get_contact_counts(driver):
         )
         print("  Modal loaded")
         
-        # Wait for the contact count elements to be present
-        print("  Waiting for contact count elements...")
-        contact_elements = WebDriverWait(driver, 5).until(
-            EC.presence_of_all_elements_located((
-                By.XPATH,
-                "//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')]"
-            ))
-        )
+        # Function to check if text is valid (either a number or '--')
+        def is_valid_text(text):
+            text = text.strip()
+            return text.isdigit() or text == '--' or text == ''
         
-        if len(contact_elements) != 2:
-            print(f"  ⚠️ Expected 2 contact elements, found {len(contact_elements)}")
+        # Wait for the contact count elements to be present AND have valid content
+        print("  Starting attempts to get valid contact numbers...")
+        contact_elements = None
+        max_attempts = 5
+        
+        for attempt in range(max_attempts):
+            print(f"\n  📍 Attempt {attempt + 1} of {max_attempts}:")
+            try:
+                print("    Looking for contact elements...")
+                contact_elements = WebDriverWait(driver, 2).until(
+                    EC.presence_of_all_elements_located((
+                        By.XPATH,
+                        "//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')]"
+                    ))
+                )
+                
+                print(f"    Found {len(contact_elements)} elements")
+                
+                # Log the content of each element
+                for i, element in enumerate(contact_elements):
+                    text = element.text.strip()
+                    print(f"    Element {i+1} text: '{text}'")
+                
+                # Check if both elements have valid content
+                if len(contact_elements) == 2:
+                    left_text = contact_elements[0].text.strip()
+                    right_text = contact_elements[1].text.strip()
+                    
+                    print(f"    Validating - Left: '{left_text}', Right: '{right_text}'")
+                    
+                    # Handle empty strings with retries
+                    if left_text == '' or right_text == '':
+                        if attempt < max_attempts - 1:
+                            print(f"    ⚠️ Empty value(s) found, will retry...")
+                            time.sleep(1)
+                            continue
+                    
+                    if is_valid_text(left_text) and is_valid_text(right_text):
+                        print(f"    ✅ Found valid numbers on attempt {attempt + 1}")
+                        break
+                    else:
+                        print(f"    ⚠️ Invalid content found, will retry...")
+                else:
+                    print(f"    ⚠️ Wrong number of elements ({len(contact_elements)}), will retry...")
+                
+                if attempt < max_attempts - 1:
+                    print("    Waiting 1 second before next attempt...")
+                    time.sleep(1)
+                
+            except Exception as e:
+                print(f"    ⚠️ Attempt {attempt + 1} failed: {str(e)}")
+                if attempt == max_attempts - 1:
+                    raise Exception(f"Failed to get valid contact numbers after {max_attempts} attempts")
+                print("    Waiting 1 second before next attempt...")
+                time.sleep(1)
+        
+        if not contact_elements or len(contact_elements) != 2:
+            print(f"  ❌ Final check failed: Expected 2 contact elements, found {len(contact_elements) if contact_elements else 0}")
             return None, None
-        
-        print("\n  Found contact elements:")
-        for i, element in enumerate(contact_elements):
-            print(f"    Element {i+1}: '{element.text}'")
         
         # Extract numbers from text, handling '--' as 0
         try:
             left_text = contact_elements[0].text.strip()
+            if not is_valid_text(left_text):
+                print(f"    ❌ Invalid left contact value: '{left_text}'")
+                return None, None
             left_contacts = 0 if left_text == '--' else int(left_text)
             print(f"    ✅ Left contacts: {left_contacts}")
         except ValueError as e:
@@ -214,6 +265,9 @@ def get_contact_counts(driver):
             
         try:
             right_text = contact_elements[1].text.strip()
+            if not is_valid_text(right_text):
+                print(f"    ❌ Invalid right contact value: '{right_text}'")
+                return None, None
             right_contacts = 0 if right_text == '--' else int(right_text)
             print(f"    ✅ Right contacts: {right_contacts}")
         except ValueError as e:
@@ -360,75 +414,67 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                 review_button = current_row.find_element(By.XPATH, ".//button[.//i18n-string[@data-key='duplicates.openReviewModal']]")
                 driver.execute_script("arguments[0].click();", review_button)
                 
-                # Wait for modal to be fully loaded by checking for contact counts
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//dt[text()='Number of Associated Contacts']"))
-                )
-                
                 # Step 3: Extract and compare information
                 print("\nExtracting company information...")
                 
-                # Get contact counts using more reliable selectors
-                left_contacts = int(WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH,
-                        "//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')]"))
-                ).text)
+                # Get contact counts with retries
+                contact_counts = get_contact_counts(driver)
+                if not contact_counts:
+                    print("❌ Failed to get contact counts after all retries")
+                    if auto_reject_errors:
+                        print("Auto-rejecting this pair...")
+                        cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
+                        driver.execute_script("arguments[0].click();", cancel_button)
+                        continue
+                    proceed = input("Continue with next pair? (y/n): ")
+                    if proceed.lower() != 'y':
+                        return False
+                    continue
                 
-                right_contacts = int(WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH,
-                        "(//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')])[2]"))
-                ).text)
+                left_contacts, right_contacts = contact_counts
+                
+                # Get domains
+                left_domain, right_domain = get_company_domains(driver)
                 
                 print(f"\nContact Counts:")
                 print(f"Left company: {left_contacts} contacts")
                 print(f"Right company: {right_contacts} contacts")
                 
-                # Get domains using more reliable selectors
-                try:
-                    left_domain = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH,
-                            "//div[contains(@class, 'private-selectable-box--selected')]//small[contains(@class, 'private-microcopy')]"))
-                    ).text.strip('--')
-                except:
-                    left_domain = None
-                    
-                try:
-                    right_domain = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH,
-                            "(//div[contains(@class, 'private-selectable-box')]//small[contains(@class, 'private-microcopy')])[2]"))
-                    ).text.strip('--')
-                except:
-                    right_domain = None
-                
-                left_rank = get_domain_rank(left_domain) if left_domain else None
-                right_rank = get_domain_rank(right_domain) if right_domain else None
-                
                 print(f"\nDomains:")
-                print(f"Left company: {left_domain} (rank: {left_rank})")
-                print(f"Right company: {right_domain} (rank: {right_rank})")
+                print(f"Left company: {left_domain} (rank: {get_domain_rank(left_domain) if left_domain else None})")
+                print(f"Right company: {right_domain} (rank: {get_domain_rank(right_domain) if right_domain else None})")
                 
                 # Step 4: Make selection decision
                 print("\nMaking selection decision...")
                 select_right = False
                 
-                if left_contacts is not None and right_contacts is not None:
-                    if right_contacts > left_contacts * 1.5:
-                        print("Right company has 50% more contacts")
-                        select_right = True
-                    elif left_contacts > right_contacts * 1.5:
-                        print("Left company has 50% more contacts")
+                # First check contact counts
+                if left_contacts > right_contacts:
+                    print(f"Left company has more contacts ({left_contacts} > {right_contacts})")
+                    select_right = False
+                elif right_contacts > left_contacts:
+                    print(f"Right company has more contacts ({right_contacts} > {left_contacts})")
+                    select_right = True
+                else:
+                    # If contact counts are tied or both '--', check domains
+                    print("Contact counts are equal or both '--', checking domains...")
+                    if left_domain == right_domain or (left_domain == '--' and right_domain == '--'):
+                        print("Domains are same or both '--', selecting left company")
                         select_right = False
                     else:
-                        print("Contact counts similar, checking domains...")
-                        if left_rank and right_rank:
-                            if right_rank < left_rank:
-                                print("Right company has better domain extension")
-                                select_right = True
-                            elif left_rank < right_rank:
-                                print("Left company has better domain extension")
+                        # Compare domain ranks
+                        left_rank = get_domain_rank(left_domain)
+                        right_rank = get_domain_rank(right_domain)
+                        if left_rank is not None and right_rank is not None:
+                            if left_rank < right_rank:  # Lower rank is better
+                                print(f"Left domain has better rank ({left_rank} < {right_rank})")
                                 select_right = False
                             else:
-                                print("Domain ranks equal, keeping left company")
+                                print(f"Right domain has better or equal rank ({right_rank} <= {left_rank})")
+                                select_right = True
+                        else:
+                            print("One or both domains unranked, selecting left company")
+                            select_right = False
                 
                 # Step 5: Select company and confirm
                 current = get_current_selection(driver)
@@ -473,7 +519,15 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                 print("✅ Merge completed successfully")
                 
             except Exception as e:
-                print(f"Error processing pair: {str(e)}")
+                print(f"❌ Error processing pair: {str(e)}")
+                if auto_reject_errors:
+                    print("Auto-rejecting this pair...")
+                    try:
+                        cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
+                        driver.execute_script("arguments[0].click();", cancel_button)
+                    except:
+                        pass  # Modal might already be closed
+                    continue
                 proceed = input("Continue with next pair? (y/n): ")
                 if proceed.lower() != 'y':
                     return False
@@ -482,7 +536,7 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
         return True
             
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
+        print(f"❌ An error occurred: {str(e)}")
         return False
 
 def automate_merge():
