@@ -290,7 +290,7 @@ def get_domain_rank(domain):
             return ranks[ext]
     return None  # Return None for unranked domains
 
-def get_contact_counts(driver):
+def get_contact_counts(driver, current_row=None, debug_mode=False):
     """Get contact counts from both companies in merge modal"""
     try:
         print("\n📊 Getting contact counts...")
@@ -349,6 +349,10 @@ def get_contact_counts(driver):
             print(f"  ⚠️ {message}, retrying...")
             if attempt < max_attempts - 1:
                 time.sleep(0.5)  # Short delay between retries
+            elif current_row and debug_mode:  # On last attempt failure, check for error modal
+                print("  Checking for validation error modal...")
+                if check_for_error_modal(driver, current_row, debug_mode):
+                    return None, None
         
         raise Exception(f"Failed to get valid contact counts after {max_attempts} attempts")
         
@@ -453,6 +457,53 @@ def get_company_domains(driver):
         print(f"Error getting company domains: {str(e)}")
         return None, None
 
+def check_for_error_modal(driver, current_row, debug_mode=False):
+    """Check if error modal appears and handle it"""
+    try:
+        # Check for error modal using exact selector
+        error_modal = WebDriverWait(driver, 2).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "h4.private-error-msg__title"))
+        )
+        
+        # Verify it's the "All is not lost" modal
+        if error_modal.text.strip() != "All is not lost.":
+            return False
+            
+        if debug_mode:
+            print("\n⚠️ Validation error modal detected")
+        
+        # Find and click Cancel button using exact selector
+        cancel_button = WebDriverWait(driver, 2).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-test-id='merge-modal-lib_merge-cancel-button']"))
+        )
+        driver.execute_script("arguments[0].click();", cancel_button)
+        
+        # Wait for modal to close
+        WebDriverWait(driver, 3).until(
+            EC.invisibility_of_element_located((By.CSS_SELECTOR, "h4.private-error-msg__title"))
+        )
+        
+        if debug_mode:
+            print("Clicking reject button instead...")
+            
+        # Click reject button
+        reject_button = current_row.find_element(By.XPATH, ".//button[.//i18n-string[@data-key='duplicates.table.buttons.reject']]")
+        driver.execute_script("arguments[0].click();", reject_button)
+        
+        # Wait for reject to complete
+        WebDriverWait(driver, 3).until(
+            EC.staleness_of(reject_button)
+        )
+        
+        return True  # Indicates we found and handled error modal
+        
+    except TimeoutException:
+        return False  # No error modal found
+    except Exception as e:
+        if debug_mode:
+            print(f"Error handling validation modal: {str(e)}")
+        return False
+
 def process_duplicates(driver, pairs_to_process, progress_bar=None, args=None):
     try:
         merged_companies = set()
@@ -499,13 +550,12 @@ def process_duplicates(driver, pairs_to_process, progress_bar=None, args=None):
                 if debug_mode:
                     print("\nExtracting company information...")
                 
-                # Get contact counts with retries
-                contact_counts = get_contact_counts(driver)
+                # Get contact counts with retries (will also check for error modal)
+                contact_counts = get_contact_counts(driver, current_row, debug_mode)
                 if not contact_counts:
                     if debug_mode:
-                        print("❌ Failed to get contact counts after all retries")
-                    cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
-                    driver.execute_script("arguments[0].click();", cancel_button)
+                        print("❌ Failed to get contact counts")
+                    processed_count += 1
                     if progress_bar:
                         progress_bar.update(1)
                     continue
