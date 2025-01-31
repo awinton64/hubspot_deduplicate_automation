@@ -245,117 +245,94 @@ def get_current_selection(driver):
     """Get which company (left/right) is currently selected"""
     try:
         print("\n🔍 Checking current selection...")
-        # Wait for modal and boxes to be fully loaded
-        print("  Waiting for selectable boxes to load...")
-        boxes = WebDriverWait(driver, 10).until(
+        # Quick check for boxes and their state
+        boxes = WebDriverWait(driver, 2).until(
             EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box.private-selectable-button"))
         )
-        print(f"  Found {len(boxes)} selectable boxes")
         
-        # Check which box is selected using aria-checked attribute
+        # Direct check of aria-checked attribute
         for i, box in enumerate(boxes):
-            aria_checked = box.get_attribute('aria-checked')
-            print(f"  Box {i+1}: aria-checked = {aria_checked}")
-            if aria_checked == 'true':
+            if box.get_attribute('aria-checked') == 'true':
                 result = 'right' if i == 1 else 'left'
-                print(f"  ✅ Found selection: {result.upper()} box is selected")
+                print(f"  ✅ {result.upper()} box is selected")
                 return result
-        print("  ⚠️ No box found with aria-checked='true', defaulting to LEFT")
-        return 'left'  # Default to left if can't determine
+                
+        print("  ⚠️ No selection found, defaulting to LEFT")
+        return 'left'
     except Exception as e:
-        print(f"  ❌ Error getting current selection: {str(e)}")
-        return 'left'  # Default to left if can't determine
+        print(f"  ❌ Error checking selection: {str(e)}")
+        return 'left'
 
 def select_primary_company(driver, select_right):
     """Select either the left or right company as primary"""
     try:
-        print("\n🎯 Attempting to select primary company...")
+        print("\n🎯 Selecting primary company...")
         desired = "RIGHT" if select_right else "LEFT"
-        print(f"  Target: {desired} company")
         
-        def verify_selection(box):
+        def quick_select():
             try:
-                return (
-                    box.get_attribute('aria-checked') == 'true' and
-                    len(driver.find_elements(By.CSS_SELECTOR, "div.private-loading-spinner")) == 0
-                )
-            except:
-                return False
-        
-        def attempt_selection():
-            try:
-                # Quick check for modal
-                modal = WebDriverWait(driver, 2).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal[aria-modal='true']"))
-                )
-                
-                # Get both boxes in one go
-                boxes = WebDriverWait(driver, 2).until(
+                # Get boxes with minimal wait
+                boxes = WebDriverWait(driver, 1).until(
                     EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box.private-selectable-button"))
                 )
                 
                 if len(boxes) != 2:
-                    return False, "Wrong number of boxes found"
-                
+                    return False, "Wrong number of boxes"
+                    
                 target_box = boxes[1] if select_right else boxes[0]
                 
-                # Quick check if already selected
-                if verify_selection(target_box):
-                    return True, "Already selected correctly"
+                # Check if already selected
+                if target_box.get_attribute('aria-checked') == 'true':
+                    return True, "Already selected"
                 
-                # Click and verify
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();", target_box)
+                # Direct click without scrolling (HubSpot's modal is always visible)
+                driver.execute_script("arguments[0].click();", target_box)
                 
-                # Quick verification
-                if WebDriverWait(driver, 1).until(lambda _: verify_selection(target_box)):
-                    return True, "Selection successful"
-                
-                return False, "Selection failed verification"
+                # Quick check for success
+                return (target_box.get_attribute('aria-checked') == 'true', "Click executed")
                 
             except Exception as e:
                 return False, str(e)
         
-        # Main retry loop
+        # Fast retry loop
         max_attempts = 3
         for attempt in range(max_attempts):
-            print(f"  Attempt {attempt + 1}/{max_attempts}...")
-            success, message = attempt_selection()
+            success, message = quick_select()
             
             if success:
                 print(f"  ✅ {message}")
                 return
-            
-            print(f"  ⚠️ {message}, retrying...")
+                
             if attempt < max_attempts - 1:
-                time.sleep(0.5)  # Short delay between retries
+                print(f"  ⚠️ Attempt {attempt + 1} failed: {message}")
+                time.sleep(0.2)  # Very short delay between attempts
         
-        raise Exception(f"Failed to select {desired} company after {max_attempts} attempts")
+        raise Exception(f"Failed to select {desired} company")
+        
     except Exception as e:
-        print(f"  ❌ Error selecting primary company: {str(e)}")
+        print(f"  ❌ Selection failed: {str(e)}")
         raise e
 
 def get_company_domains(driver):
     """Get domains from both companies in merge modal"""
     try:
-        # Find domain elements in the merge modal using a more specific selector
-        domain_elements = WebDriverWait(driver, 3).until(  # Reduced from 5 to 3 seconds
-            EC.presence_of_all_elements_located((
-                By.CSS_SELECTOR,
-                "div.merge-select-object div.private-truncated-string__inner"  # More specific CSS selector
-            ))
-        )
-        
-        if len(domain_elements) != 2:
-            print("⚠️ Could not find domains for both companies")
-            return None, None
-        
-        left_domain = domain_elements[0].text.strip()
-        right_domain = domain_elements[1].text.strip()
-        
-        print(f"Left domain: {left_domain}")
-        print(f"Right domain: {right_domain}")
-        
-        return left_domain, right_domain
+        # Try to get domains with a very short timeout first
+        try:
+            domain_elements = WebDriverWait(driver, 0.5).until(
+                EC.presence_of_all_elements_located((
+                    By.CSS_SELECTOR,
+                    "div.merge-select-object div[data-test-id='domain-name'] div.private-truncated-string__inner"  # More specific selector
+                ))
+            )
+            
+            if len(domain_elements) == 2:
+                left_domain = domain_elements[0].text.strip()
+                right_domain = domain_elements[1].text.strip()
+                return left_domain, right_domain
+        except:
+            pass  # If quick attempt fails, return None values
+            
+        return None, None
         
     except Exception as e:
         print(f"Error getting company domains: {str(e)}")
@@ -415,16 +392,17 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                 
                 left_contacts, right_contacts = contact_counts
                 
-                # Get domains
+                # Get domains (quick check, don't wait if not immediately available)
                 left_domain, right_domain = get_company_domains(driver)
                 
                 print(f"\nContact Counts:")
                 print(f"Left company: {left_contacts} contacts")
                 print(f"Right company: {right_contacts} contacts")
                 
-                print(f"\nDomains:")
-                print(f"Left company: {left_domain} (rank: {get_domain_rank(left_domain) if left_domain else None})")
-                print(f"Right company: {right_domain} (rank: {get_domain_rank(right_domain) if right_domain else None})")
+                if left_domain or right_domain:  # Only print domain info if we found any
+                    print(f"\nDomains:")
+                    print(f"Left company: {left_domain}")
+                    print(f"Right company: {right_domain}")
                 
                 # Step 4: Make selection decision
                 print("\nMaking selection decision...")
