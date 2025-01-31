@@ -515,10 +515,18 @@ def process_duplicates(driver, pairs_to_process, progress_bar=None, args=None):
                 if debug_mode:
                     print(f"\nProcessing pair {processed_count + 1} of {pairs_to_process}...")
                 
-                # Get current row and company names using data-test-id
-                current_row = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'tr[data-test-id^="doppel-row-"]'))
-                )
+                # Try to find next row with a short timeout
+                try:
+                    current_row = WebDriverWait(driver, 3).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'tr[data-test-id^="doppel-row-"]'))
+                    )
+                except TimeoutException:
+                    if debug_mode:
+                        print("\n✅ No more rows to process!")
+                    else:
+                        print("\nProcessing complete!")
+                    return None  # Special return value to indicate completion
+                
                 company1 = current_row.find_element(By.CSS_SELECTOR, 'td[data-test-id="doppelganger_ui-record-cell"] a[data-test-id="recordLink"]').text
                 company2 = current_row.find_elements(By.CSS_SELECTOR, 'td[data-test-id="doppelganger_ui-record-cell"] a[data-test-id="recordLink"]')[1].text
                 company_pair = frozenset([company1, company2])
@@ -753,8 +761,10 @@ def automate_merge():
                     args=args
                 )
             
-            if not success:
-                # If process_duplicates returns False, user cancelled during processing
+            if success is None:  # No more rows to process
+                break
+                
+            if not success:  # User cancelled during processing
                 continue
             
             # Refresh the page to get updated list of duplicates
