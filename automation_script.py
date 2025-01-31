@@ -181,7 +181,7 @@ def get_contact_counts(driver):
         print("\n📊 Getting contact counts...")
         # Wait for modal to be fully loaded first
         print("  Waiting for modal to be fully loaded...")
-        WebDriverWait(driver, 5).until(
+        WebDriverWait(driver, 3).until(  # Reduced from 5 to 3 seconds
             EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal"))
         )
         print("  Modal loaded")
@@ -200,7 +200,7 @@ def get_contact_counts(driver):
             print(f"\n  📍 Attempt {attempt + 1} of {max_attempts}:")
             try:
                 print("    Looking for contact elements...")
-                contact_elements = WebDriverWait(driver, 2).until(
+                contact_elements = WebDriverWait(driver, 1).until(  # Reduced from 2 to 1 second
                     EC.presence_of_all_elements_located((
                         By.XPATH,
                         "//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')]"
@@ -225,7 +225,7 @@ def get_contact_counts(driver):
                     if left_text == '' or right_text == '':
                         if attempt < max_attempts - 1:
                             print(f"    ⚠️ Empty value(s) found, will retry...")
-                            time.sleep(1)
+                            time.sleep(0.5)  # Reduced from 1 to 0.5 seconds
                             continue
                     
                     if is_valid_text(left_text) and is_valid_text(right_text):
@@ -237,8 +237,8 @@ def get_contact_counts(driver):
                     print(f"    ⚠️ Wrong number of elements ({len(contact_elements)}), will retry...")
                 
                 if attempt < max_attempts - 1:
-                    print("    Waiting 1 second before next attempt...")
-                    time.sleep(1)
+                    print("    Waiting before next attempt...")
+                    time.sleep(0.5)  # Reduced from 1 to 0.5 seconds
                 
             except Exception as e:
                 print(f"    ⚠️ Attempt {attempt + 1} failed: {str(e)}")
@@ -316,12 +316,25 @@ def select_primary_company(driver, select_right):
         desired = "RIGHT" if select_right else "LEFT"
         print(f"  Target: {desired} company")
         
-        # Wait for the selectable boxes to be present
+        # First ensure modal is fully loaded and stable
+        print("  Ensuring modal is stable...")
+        WebDriverWait(driver, 3).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal[aria-modal='true']"))
+        )
+        
+        # Wait for boxes to be both present AND clickable
         print("  Waiting for selectable boxes to load...")
-        boxes = WebDriverWait(driver, 10).until(
+        boxes = WebDriverWait(driver, 3).until(
             EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box.private-selectable-button"))
         )
-        print(f"  Found {len(boxes)} selectable boxes")
+        
+        # Verify both boxes are clickable
+        for box in boxes:
+            WebDriverWait(driver, 2).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, f"div.private-selectable-box.private-selectable-button[aria-checked='{box.get_attribute('aria-checked')}']"))
+            )
+        
+        print(f"  Found {len(boxes)} interactive boxes")
         
         if len(boxes) != 2:
             print(f"  ❌ Error: Expected 2 boxes, found {len(boxes)}")
@@ -331,20 +344,29 @@ def select_primary_company(driver, select_right):
         target_box = boxes[1] if select_right else boxes[0]
         print(f"  Initial aria-checked state: {target_box.get_attribute('aria-checked')}")
         
-        # Force scroll into view and click
+        # Ensure target box is in viewport and stable before clicking
+        print("  Positioning target box...")
+        driver.execute_script("""
+            arguments[0].scrollIntoView({block: 'center'});
+            // Small delay to ensure scroll completes
+            return new Promise(resolve => setTimeout(resolve, 100));
+        """, target_box)
+        
         print("  Attempting to click box...")
-        driver.execute_script("arguments[0].scrollIntoView(true); arguments[0].click();", target_box)
+        driver.execute_script("arguments[0].click();", target_box)
         print("  Click executed")
         
-        # Wait for selection to update and verify
+        # Wait for selection to update with better verification
         print("  Waiting for selection to update...")
         try:
-            WebDriverWait(driver, 3).until(
-                lambda x: target_box.get_attribute('aria-checked') == 'true'
-            )
+            # Wait for both the aria-checked update AND any loading spinners to disappear
+            WebDriverWait(driver, 2).until(lambda x: (
+                target_box.get_attribute('aria-checked') == 'true' and
+                len(driver.find_elements(By.CSS_SELECTOR, "div.private-loading-spinner")) == 0
+            ))
             print(f"  ✅ Selection verified: {desired} box is now selected")
         except TimeoutException:
-            print(f"  ❌ Selection failed to update after 3 seconds")
+            print(f"  ❌ Selection failed to update after 2 seconds")
             print(f"  Final aria-checked state: {target_box.get_attribute('aria-checked')}")
             raise Exception("Selection failed to update")
         
@@ -355,11 +377,11 @@ def select_primary_company(driver, select_right):
 def get_company_domains(driver):
     """Get domains from both companies in merge modal"""
     try:
-        # Find domain elements in the merge modal
-        domain_elements = WebDriverWait(driver, 5).until(
+        # Find domain elements in the merge modal using a more specific selector
+        domain_elements = WebDriverWait(driver, 3).until(  # Reduced from 5 to 3 seconds
             EC.presence_of_all_elements_located((
-                By.XPATH,
-                "//div[contains(@class, 'merge-select-object')]//div[contains(text(), 'Domain name')]/following-sibling::div"
+                By.CSS_SELECTOR,
+                "div.merge-select-object div.private-truncated-string__inner"  # More specific CSS selector
             ))
         )
         
