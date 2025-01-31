@@ -11,8 +11,22 @@ import json
 import psutil
 import argparse
 from pathlib import Path
+import sys
+import termios
+import tty
 from selenium.common.exceptions import TimeoutException
 from tqdm import tqdm  # For progress bars
+
+def get_single_keypress():
+    """Get a single keypress without requiring Enter"""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(sys.stdin.fileno())
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
 
 def parse_args():
     parser = argparse.ArgumentParser(description='HubSpot Duplicate Company Automation')
@@ -24,18 +38,13 @@ def parse_args():
     
     # Processing options
     parser.add_argument('--pairs', type=int, help='Number of pairs to process')
-    parser.add_argument('--auto-reject-errors', action='store_true', help='Automatically reject pairs with errors')
-    parser.add_argument('--non-interactive', action='store_true', help='Run without asking for confirmation')
     parser.add_argument('--batch-size', type=int, default=20, help='Number of pairs to process in each batch')
     
-    # Output options
-    parser.add_argument('--quiet', action='store_true', help='Minimize output, show only important messages')
-    parser.add_argument('--debug', action='store_true', help='Show detailed debug information')
-    parser.add_argument('--log-file', help='Save detailed log to file')
+    # Debug mode (replaces multiple flags)
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with detailed logging and merge verification')
     
     # Browser options
     parser.add_argument('--keep-open', action='store_true', help='Keep browser open after completion')
-    parser.add_argument('--headless', action='store_true', help='Run in headless mode (no GUI)')
     
     return parser.parse_args()
 
@@ -87,6 +96,7 @@ def get_chrome_profiles():
 def list_and_select_profile(args):
     """List and select Chrome profile with command line arg support"""
     profiles = get_chrome_profiles()
+    debug_mode = args and args.debug
     
     if not profiles:
         print("No Chrome profiles found!")
@@ -119,36 +129,35 @@ def list_and_select_profile(args):
     
     # Try to use last profile if no profile specified
     last_profile = get_last_profile()
-    if last_profile and last_profile in profile_map and not args.quiet:
+    if last_profile and last_profile in profile_map:
         use_last = input(f"\nUse last profile '{last_profile}'? (Y/n): ").lower()
         if use_last != 'n':
             return profile_map[last_profile], last_profile
     
     # Interactive profile selection
-    if not args.non_interactive:
-        print("\nAvailable Chrome profiles:")
-        print("-" * 50)
-        
-        # Create a list of profiles for easy selection
-        profile_list = list(profile_map.items())
-        for idx, (name, dir_name) in enumerate(profile_list, 1):
-            print(f"{idx}. {name}")
-        
-        print("-" * 50)
-        
-        while True:
-            try:
-                choice = int(input("\nSelect a profile number (or 0 to exit): "))
-                if choice == 0:
-                    return None, None
-                if 1 <= choice <= len(profile_list):
-                    selected_profile = profile_list[choice-1]
-                    if args.save_last_profile:
-                        save_last_profile(selected_profile[0])
-                    return selected_profile[1], selected_profile[0]
-                print("Invalid selection. Please try again.")
-            except ValueError:
-                print("Please enter a valid number.")
+    print("\nAvailable Chrome profiles:")
+    print("-" * 50)
+    
+    # Create a list of profiles for easy selection
+    profile_list = list(profile_map.items())
+    for idx, (name, dir_name) in enumerate(profile_list, 1):
+        print(f"{idx}. {name}")
+    
+    print("-" * 50)
+    
+    while True:
+        try:
+            choice = int(input("\nSelect a profile number (or 0 to exit): "))
+            if choice == 0:
+                return None, None
+            if 1 <= choice <= len(profile_list):
+                selected_profile = profile_list[choice-1]
+                if args.save_last_profile:
+                    save_last_profile(selected_profile[0])
+                return selected_profile[1], selected_profile[0]
+            print("Invalid selection. Please try again.")
+        except ValueError:
+            print("Please enter a valid number.")
     
     print("No profile selected")
     return None, None
@@ -423,14 +432,16 @@ def get_company_domains(driver):
         print(f"Error getting company domains: {str(e)}")
         return None, None
 
-def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progress_bar=None, args=None):
+def process_duplicates(driver, pairs_to_process, progress_bar=None, args=None):
     try:
         merged_companies = set()
         processed_count = 0
+        debug_mode = args and args.debug
         
         while processed_count < pairs_to_process:
             try:
-                print(f"\nProcessing pair {processed_count + 1} of {pairs_to_process}...")
+                if debug_mode:
+                    print(f"\nProcessing pair {processed_count + 1} of {pairs_to_process}...")
                 
                 # Get current row and company names using data-test-id
                 current_row = WebDriverWait(driver, 10).until(
@@ -440,11 +451,13 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progr
                 company2 = current_row.find_elements(By.CSS_SELECTOR, 'td[data-test-id="doppelganger_ui-record-cell"] a[data-test-id="recordLink"]')[1].text
                 company_pair = frozenset([company1, company2])
                 
-                print(f"Comparing: {company1} vs {company2}")
+                if debug_mode:
+                    print(f"Comparing: {company1} vs {company2}")
                 
                 # Step 1: Check if already processed
                 if company_pair in merged_companies:
-                    print(f"⚠️ These companies were already processed")
+                    if debug_mode:
+                        print(f"⚠️ These companies were already processed")
                     reject_button = current_row.find_element(By.XPATH, ".//button[.//i18n-string[@data-key='duplicates.table.buttons.reject']]")
                     driver.execute_script("arguments[0].click();", reject_button)
                     WebDriverWait(driver, 3).until(
@@ -456,27 +469,22 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progr
                     continue
                 
                 # Step 2: Click Review to open modal
-                print("\nOpening review modal...")
+                if debug_mode:
+                    print("\nOpening review modal...")
                 review_button = current_row.find_element(By.XPATH, ".//button[.//i18n-string[@data-key='duplicates.openReviewModal']]")
                 driver.execute_script("arguments[0].click();", review_button)
                 
                 # Step 3: Extract and compare information
-                print("\nExtracting company information...")
+                if debug_mode:
+                    print("\nExtracting company information...")
                 
                 # Get contact counts with retries
                 contact_counts = get_contact_counts(driver)
                 if not contact_counts:
-                    print("❌ Failed to get contact counts after all retries")
-                    if auto_reject_errors:
-                        print("Auto-rejecting this pair...")
-                        cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
-                        driver.execute_script("arguments[0].click();", cancel_button)
-                        if progress_bar:
-                            progress_bar.update(1)
-                        continue
-                    proceed = input("Continue with next pair? (y/n): ")
-                    if proceed.lower() != 'y':
-                        return False
+                    if debug_mode:
+                        print("❌ Failed to get contact counts after all retries")
+                    cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
+                    driver.execute_script("arguments[0].click();", cancel_button)
                     if progress_bar:
                         progress_bar.update(1)
                     continue
@@ -486,31 +494,37 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progr
                 # Get domains (quick check, don't wait if not immediately available)
                 left_domain, right_domain = get_company_domains(driver)
                 
-                print(f"\nContact Counts:")
-                print(f"Left company: {left_contacts} contacts")
-                print(f"Right company: {right_contacts} contacts")
-                
-                if left_domain or right_domain:  # Only print domain info if we found any
-                    print(f"\nDomains:")
-                    print(f"Left company: {left_domain}")
-                    print(f"Right company: {right_domain}")
+                if debug_mode:
+                    print(f"\nContact Counts:")
+                    print(f"Left company: {left_contacts} contacts")
+                    print(f"Right company: {right_contacts} contacts")
+                    
+                    if left_domain or right_domain:
+                        print(f"\nDomains:")
+                        print(f"Left company: {left_domain}")
+                        print(f"Right company: {right_domain}")
                 
                 # Step 4: Make selection decision
-                print("\nMaking selection decision...")
+                if debug_mode:
+                    print("\nMaking selection decision...")
                 select_right = False
                 
                 # First check contact counts
                 if left_contacts > right_contacts:
-                    print(f"Left company has more contacts ({left_contacts} > {right_contacts})")
+                    if debug_mode:
+                        print(f"Left company has more contacts ({left_contacts} > {right_contacts})")
                     select_right = False
                 elif right_contacts > left_contacts:
-                    print(f"Right company has more contacts ({right_contacts} > {left_contacts})")
+                    if debug_mode:
+                        print(f"Right company has more contacts ({right_contacts} > {left_contacts})")
                     select_right = True
                 else:
                     # If contact counts are tied or both '--', check domains
-                    print("Contact counts are equal or both '--', checking domains...")
+                    if debug_mode:
+                        print("Contact counts are equal or both '--', checking domains...")
                     if left_domain == right_domain or (left_domain == '--' and right_domain == '--'):
-                        print("Domains are same or both '--', selecting left company")
+                        if debug_mode:
+                            print("Domains are same or both '--', selecting left company")
                         select_right = False
                     else:
                         # Compare domain ranks
@@ -518,13 +532,16 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progr
                         right_rank = get_domain_rank(right_domain)
                         if left_rank is not None and right_rank is not None:
                             if left_rank < right_rank:  # Lower rank is better
-                                print(f"Left domain has better rank ({left_rank} < {right_rank})")
+                                if debug_mode:
+                                    print(f"Left domain has better rank ({left_rank} < {right_rank})")
                                 select_right = False
                             else:
-                                print(f"Right domain has better or equal rank ({right_rank} <= {left_rank})")
+                                if debug_mode:
+                                    print(f"Right domain has better or equal rank ({right_rank} <= {left_rank})")
                                 select_right = True
                         else:
-                            print("One or both domains unranked, selecting left company")
+                            if debug_mode:
+                                print("One or both domains unranked, selecting left company")
                             select_right = False
                 
                 # Step 5: Select company and confirm
@@ -532,30 +549,33 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progr
                 desired = 'right' if select_right else 'left'
                 
                 if current != desired:
-                    print(f"\nChanging selection from {current} to {desired} company")
+                    if debug_mode:
+                        print(f"\nChanging selection from {current} to {desired} company")
                     select_primary_company(driver, select_right)
-                else:
+                elif debug_mode:
                     print(f"\nKeeping current selection ({current} company)")
                 
-                # Step 6: Ask for confirmation
-                print("\nCurrent Selection Summary:")
-                print("-" * 50)
-                print(f"Selected Company: {desired.upper()}")
-                print(f"Contact Counts: Left ({left_contacts}) vs Right ({right_contacts})")
-                print(f"Domains: Left ({left_domain}) vs Right ({right_domain})")
-                print("-" * 50)
-                
-                proceed = input("\nIs this selection correct? (y/n): ")
-                if proceed.lower() != 'y':
-                    print("Canceling merge...")
-                    cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
-                    driver.execute_script("arguments[0].click();", cancel_button)
-                    if progress_bar:
-                        progress_bar.update(1)
-                    continue
+                # Step 6: Ask for confirmation in debug mode
+                if debug_mode:
+                    print("\nCurrent Selection Summary:")
+                    print("-" * 50)
+                    print(f"Selected Company: {desired.upper()}")
+                    print(f"Contact Counts: Left ({left_contacts}) vs Right ({right_contacts})")
+                    print(f"Domains: Left ({left_domain}) vs Right ({right_domain})")
+                    print("-" * 50)
+                    print("\nPress Enter to merge, any other key to cancel...")
+                    
+                    if get_single_keypress() != '\r':  # \r is Enter key
+                        print("Canceling merge...")
+                        cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
+                        driver.execute_script("arguments[0].click();", cancel_button)
+                        if progress_bar:
+                            progress_bar.update(1)
+                        continue
                 
                 # Step 7: Execute merge
-                print("\nExecuting merge...")
+                if debug_mode:
+                    print("\nExecuting merge...")
                 merge_button = WebDriverWait(driver, 3).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-test-id='merge-modal-lib_merge-button']"))
                 )
@@ -569,26 +589,20 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progr
                 # Add to processed set and increment counter
                 merged_companies.add(company_pair)
                 processed_count += 1
-                print("✅ Merge completed successfully")
+                if debug_mode:
+                    print("✅ Merge completed successfully")
                 
                 if progress_bar:
                     progress_bar.update(1)
                 
             except Exception as e:
-                print(f"❌ Error processing pair: {str(e)}")
-                if auto_reject_errors:
-                    print("Auto-rejecting this pair...")
-                    try:
-                        cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
-                        driver.execute_script("arguments[0].click();", cancel_button)
-                    except:
-                        pass  # Modal might already be closed
-                    if progress_bar:
-                        progress_bar.update(1)
-                    continue
-                proceed = input("Continue with next pair? (y/n): ")
-                if proceed.lower() != 'y':
-                    return False
+                if debug_mode:
+                    print(f"❌ Error processing pair: {str(e)}")
+                try:
+                    cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
+                    driver.execute_script("arguments[0].click();", cancel_button)
+                except:
+                    pass  # Modal might already be closed
                 if progress_bar:
                     progress_bar.update(1)
                 continue
@@ -596,23 +610,18 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progr
         return True
             
     except Exception as e:
-        print(f"❌ An error occurred: {str(e)}")
+        if debug_mode:
+            print(f"❌ An error occurred: {str(e)}")
         return False
 
 def automate_merge():
     # Parse command line arguments
     args = parse_args()
+    debug_mode = args and args.debug
     
-    # Setup logging if requested
-    if args.log_file:
-        import logging
-        logging.basicConfig(
-            filename=args.log_file,
-            level=logging.DEBUG if args.debug else logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-    
-    if not args.quiet:
+    if debug_mode:
+        print("Starting automation in debug mode - Chrome browser will open shortly...")
+    else:
         print("Starting automation - Chrome browser will open shortly...")
     
     # Setup browser once
@@ -621,11 +630,11 @@ def automate_merge():
         return
     
     try:
-        if not args.quiet:
+        if debug_mode:
             print("\nOpening HubSpot duplicates page...")
         driver.get("https://app.hubspot.com/duplicates/22104039/companies")
         
-        if not args.quiet:
+        if debug_mode:
             print("\nWaiting for you to log in manually and navigate to the duplicates page...")
             print("Please log in through the browser if needed.")
         
@@ -636,29 +645,24 @@ def automate_merge():
         
         # Main processing loop
         while True:
-            if not args.quiet:
+            if debug_mode:
                 print("\nDetected that you're on the duplicates page!")
             
             # Get number of pairs to process
-            pairs_to_process = args.pairs or get_user_input() if not args.non_interactive else args.batch_size
+            pairs_to_process = args.pairs or get_user_input()
             
             # Process in batches with progress bar
-            with tqdm(total=pairs_to_process, disable=args.quiet) as pbar:
+            with tqdm(total=pairs_to_process, disable=not debug_mode) as pbar:
                 success = process_duplicates(
                     driver=driver,
                     pairs_to_process=pairs_to_process,
-                    auto_reject_errors=args.auto_reject_errors,
                     progress_bar=pbar,
                     args=args
                 )
             
             if not success:
-                if not args.quiet:
+                if debug_mode:
                     print("\nProcessing stopped due to an error or user request.")
-            
-            # In non-interactive mode, we're done
-            if args.non_interactive:
-                break
             
             # Ask if user wants to process more
             another_batch = input("\nWould you like to process another batch? (y/n): ")
@@ -666,7 +670,7 @@ def automate_merge():
                 break
             
             # Refresh the page to get updated list of duplicates
-            if not args.quiet:
+            if debug_mode:
                 print("\nRefreshing page to get updated duplicate list...")
             driver.refresh()
             # Wait for page to be interactive
@@ -675,24 +679,21 @@ def automate_merge():
             )
         
     except Exception as e:
-        if args.debug:
+        if debug_mode:
             import traceback
             print(f"\n❌ Error details:\n{traceback.format_exc()}")
         else:
             print(f"\n❌ An error occurred: {str(e)}")
     finally:
         if args.keep_open:
-            if not args.quiet:
+            if debug_mode:
                 print("\nBrowser will remain open. You can close it manually when done.")
         else:
-            if not args.non_interactive and not args.quiet:
-                keep_open = input("\nWould you like to keep the browser open? (y/n): ")
-                if keep_open.lower() != 'y':
-                    driver.quit()
-                else:
-                    print("\nBrowser will remain open. You can close it manually when done.")
-            else:
+            keep_open = input("\nWould you like to keep the browser open? (y/n): ")
+            if keep_open.lower() != 'y':
                 driver.quit()
+            else:
+                print("\nBrowser will remain open. You can close it manually when done.")
 
 if __name__ == "__main__":
     automate_merge() 
