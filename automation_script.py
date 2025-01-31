@@ -163,7 +163,7 @@ def list_and_select_profile(args):
     return None, None
 
 def get_user_input():
-    print("Enter number of pairs to process (or press any key to cancel)")
+    print("Enter number of pairs to process (or press any key to cancel): ", end='', flush=True)
     # Get first keypress
     ch = get_single_keypress()
     
