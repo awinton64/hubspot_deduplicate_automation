@@ -567,11 +567,15 @@ def process_duplicates(driver, pairs_to_process, progress_bar=None, args=None):
                     
                     if get_single_keypress() != '\r':  # \r is Enter key
                         print("Canceling merge...")
-                        cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
-                        driver.execute_script("arguments[0].click();", cancel_button)
+                        # Refresh page and wait for it to load
+                        driver.refresh()
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']"))
+                        )
+                        # Reset progress and ask for new batch size
                         if progress_bar:
-                            progress_bar.update(1)
-                        continue
+                            progress_bar.close()
+                        return False  # This will trigger asking for new batch size
                 
                 # Step 7: Execute merge
                 if debug_mode:
@@ -599,12 +603,28 @@ def process_duplicates(driver, pairs_to_process, progress_bar=None, args=None):
                 if debug_mode:
                     print(f"❌ Error processing pair: {str(e)}")
                 try:
-                    cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
-                    driver.execute_script("arguments[0].click();", cancel_button)
+                    # Try to find the close button by its aria-label
+                    close_button = WebDriverWait(driver, 2).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "button[aria-label='Close']"))
+                    )
+                    driver.execute_script("arguments[0].click();", close_button)
+                    
+                    # Wait for modal to close
+                    WebDriverWait(driver, 3).until(
+                        EC.invisibility_of_element_located((By.CSS_SELECTOR, "div.private-modal"))
+                    )
                 except:
-                    pass  # Modal might already be closed
+                    # If can't find close button, try clicking outside the modal to close it
+                    try:
+                        driver.execute_script("""
+                            document.querySelector('div.private-modal__backdrop').click();
+                        """)
+                    except:
+                        pass  # Modal might already be closed
+                
                 if progress_bar:
                     progress_bar.update(1)
+                processed_count += 1
                 continue
         
         return True
@@ -661,8 +681,8 @@ def automate_merge():
                 )
             
             if not success:
-                if debug_mode:
-                    print("\nProcessing stopped due to an error or user request.")
+                # Don't show error message, just continue with new batch
+                continue
             
             # Ask if user wants to process more
             another_batch = input("\nWould you like to process another batch? (y/n): ")
