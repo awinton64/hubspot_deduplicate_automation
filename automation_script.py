@@ -163,15 +163,36 @@ def list_and_select_profile(args):
     return None, None
 
 def get_user_input():
+    print("Enter number of pairs to process (or press any key to cancel)")
+    # Get first keypress
+    ch = get_single_keypress()
+    
+    # If it's not a number, treat as cancel
+    if not ch.isdigit():
+        print("\nCancelling...")
+        return None
+    
+    # If it is a number, collect the full number
+    number = ch
+    print(ch, end='', flush=True)  # Echo the first digit
+    
     while True:
-        try:
-            total = int(input("How many pairs would you like to process? "))
-            if total <= 0:
-                print("Please enter a positive number")
-                continue
-            return total
-        except ValueError:
-            print("Please enter a valid number")
+        ch = get_single_keypress()
+        if ch == '\r':  # Enter key
+            print()  # New line after input
+            break
+        if ch.isdigit():  # Add digit to number
+            number += ch
+            print(ch, end='', flush=True)  # Echo the digit
+    
+    try:
+        total = int(number)
+        if total <= 0:
+            print("Please enter a positive number")
+            return None
+        return total
+    except ValueError:
+        return None  # Return None to indicate cancellation
 
 def login_to_hubspot(driver):
     print("Handling login...")
@@ -670,6 +691,8 @@ def automate_merge():
             
             # Get number of pairs to process
             pairs_to_process = args.pairs or get_user_input()
+            if pairs_to_process is None:  # User cancelled
+                break
             
             # Process in batches with progress bar
             with tqdm(total=pairs_to_process, disable=not debug_mode) as pbar:
@@ -681,13 +704,8 @@ def automate_merge():
                 )
             
             if not success:
-                # Don't show error message, just continue with new batch
+                # If process_duplicates returns False, user cancelled during processing
                 continue
-            
-            # Ask if user wants to process more
-            another_batch = input("\nWould you like to process another batch? (y/n): ")
-            if another_batch.lower() != 'y':
-                break
             
             # Refresh the page to get updated list of duplicates
             if debug_mode:
