@@ -179,106 +179,63 @@ def get_contact_counts(driver):
     """Get contact counts from both companies in merge modal"""
     try:
         print("\n📊 Getting contact counts...")
-        # Wait for modal to be fully loaded first
-        print("  Waiting for modal to be fully loaded...")
-        WebDriverWait(driver, 3).until(  # Reduced from 5 to 3 seconds
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal"))
-        )
-        print("  Modal loaded")
         
-        # Function to check if text is valid (either a number or '--')
         def is_valid_text(text):
             text = text.strip()
             return text.isdigit() or text == '--' or text == ''
         
-        # Wait for the contact count elements to be present AND have valid content
-        print("  Starting attempts to get valid contact numbers...")
-        contact_elements = None
-        max_attempts = 5
-        
-        for attempt in range(max_attempts):
-            print(f"\n  📍 Attempt {attempt + 1} of {max_attempts}:")
+        def get_counts():
             try:
-                print("    Looking for contact elements...")
-                contact_elements = WebDriverWait(driver, 1).until(  # Reduced from 2 to 1 second
+                # Quick modal check
+                WebDriverWait(driver, 2).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal"))
+                )
+                
+                # Get contact elements
+                contact_elements = WebDriverWait(driver, 1).until(
                     EC.presence_of_all_elements_located((
                         By.XPATH,
                         "//dt[text()='Number of Associated Contacts']/following-sibling::dd[1]//span[contains(@class, 'private-truncated-string__inner')]"
                     ))
                 )
                 
-                print(f"    Found {len(contact_elements)} elements")
+                if len(contact_elements) != 2:
+                    return None, None, "Wrong number of elements found"
                 
-                # Log the content of each element
-                for i, element in enumerate(contact_elements):
-                    text = element.text.strip()
-                    print(f"    Element {i+1} text: '{text}'")
+                left_text = contact_elements[0].text.strip()
+                right_text = contact_elements[1].text.strip()
                 
-                # Check if both elements have valid content
-                if len(contact_elements) == 2:
-                    left_text = contact_elements[0].text.strip()
-                    right_text = contact_elements[1].text.strip()
-                    
-                    print(f"    Validating - Left: '{left_text}', Right: '{right_text}'")
-                    
-                    # Handle empty strings with retries
-                    if left_text == '' or right_text == '':
-                        if attempt < max_attempts - 1:
-                            print(f"    ⚠️ Empty value(s) found, will retry...")
-                            time.sleep(0.5)  # Reduced from 1 to 0.5 seconds
-                            continue
-                    
-                    if is_valid_text(left_text) and is_valid_text(right_text):
-                        print(f"    ✅ Found valid numbers on attempt {attempt + 1}")
-                        break
-                    else:
-                        print(f"    ⚠️ Invalid content found, will retry...")
-                else:
-                    print(f"    ⚠️ Wrong number of elements ({len(contact_elements)}), will retry...")
+                # Handle empty strings
+                if left_text == '' or right_text == '':
+                    return None, None, "Empty values found"
                 
-                if attempt < max_attempts - 1:
-                    print("    Waiting before next attempt...")
-                    time.sleep(0.5)  # Reduced from 1 to 0.5 seconds
+                if not is_valid_text(left_text) or not is_valid_text(right_text):
+                    return None, None, "Invalid values found"
+                
+                # Convert to numbers
+                left_contacts = 0 if left_text == '--' else int(left_text)
+                right_contacts = 0 if right_text == '--' else int(right_text)
+                
+                return left_contacts, right_contacts, "Success"
                 
             except Exception as e:
-                print(f"    ⚠️ Attempt {attempt + 1} failed: {str(e)}")
-                if attempt == max_attempts - 1:
-                    raise Exception(f"Failed to get valid contact numbers after {max_attempts} attempts")
-                print("    Waiting 1 second before next attempt...")
-                time.sleep(1)
+                return None, None, str(e)
         
-        if not contact_elements or len(contact_elements) != 2:
-            print(f"  ❌ Final check failed: Expected 2 contact elements, found {len(contact_elements) if contact_elements else 0}")
-            return None, None
-        
-        # Extract numbers from text, handling '--' as 0
-        try:
-            left_text = contact_elements[0].text.strip()
-            if not is_valid_text(left_text):
-                print(f"    ❌ Invalid left contact value: '{left_text}'")
-                return None, None
-            left_contacts = 0 if left_text == '--' else int(left_text)
-            print(f"    ✅ Left contacts: {left_contacts}")
-        except ValueError as e:
-            print(f"    ❌ Error parsing left contacts: '{left_text}' - {str(e)}")
-            return None, None
+        # Main retry loop
+        max_attempts = 5  # Keep 5 retries for contact counts
+        for attempt in range(max_attempts):
+            print(f"  Attempt {attempt + 1}/{max_attempts}...")
+            left, right, message = get_counts()
             
-        try:
-            right_text = contact_elements[1].text.strip()
-            if not is_valid_text(right_text):
-                print(f"    ❌ Invalid right contact value: '{right_text}'")
-                return None, None
-            right_contacts = 0 if right_text == '--' else int(right_text)
-            print(f"    ✅ Right contacts: {right_contacts}")
-        except ValueError as e:
-            print(f"    ❌ Error parsing right contacts: '{right_text}' - {str(e)}")
-            return None, None
+            if left is not None and right is not None:
+                print(f"  ✅ Found valid counts: Left({left}) Right({right})")
+                return left, right
+            
+            print(f"  ⚠️ {message}, retrying...")
+            if attempt < max_attempts - 1:
+                time.sleep(0.5)  # Short delay between retries
         
-        print(f"\n  Final Results:")
-        print(f"    Left company: {left_contacts} contacts")
-        print(f"    Right company: {right_contacts} contacts")
-        
-        return left_contacts, right_contacts
+        raise Exception(f"Failed to get valid contact counts after {max_attempts} attempts")
         
     except Exception as e:
         print(f"  ❌ Error getting contact counts: {str(e)}")
@@ -316,60 +273,63 @@ def select_primary_company(driver, select_right):
         desired = "RIGHT" if select_right else "LEFT"
         print(f"  Target: {desired} company")
         
-        # First ensure modal is fully loaded and stable
-        print("  Ensuring modal is stable...")
-        WebDriverWait(driver, 3).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal[aria-modal='true']"))
-        )
+        def verify_selection(box):
+            try:
+                return (
+                    box.get_attribute('aria-checked') == 'true' and
+                    len(driver.find_elements(By.CSS_SELECTOR, "div.private-loading-spinner")) == 0
+                )
+            except:
+                return False
         
-        # Wait for boxes to be both present AND clickable
-        print("  Waiting for selectable boxes to load...")
-        boxes = WebDriverWait(driver, 3).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box.private-selectable-button"))
-        )
+        def attempt_selection():
+            try:
+                # Quick check for modal
+                modal = WebDriverWait(driver, 2).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.private-modal[aria-modal='true']"))
+                )
+                
+                # Get both boxes in one go
+                boxes = WebDriverWait(driver, 2).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.private-selectable-box.private-selectable-button"))
+                )
+                
+                if len(boxes) != 2:
+                    return False, "Wrong number of boxes found"
+                
+                target_box = boxes[1] if select_right else boxes[0]
+                
+                # Quick check if already selected
+                if verify_selection(target_box):
+                    return True, "Already selected correctly"
+                
+                # Click and verify
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();", target_box)
+                
+                # Quick verification
+                if WebDriverWait(driver, 1).until(lambda _: verify_selection(target_box)):
+                    return True, "Selection successful"
+                
+                return False, "Selection failed verification"
+                
+            except Exception as e:
+                return False, str(e)
         
-        # Verify both boxes are clickable
-        for box in boxes:
-            WebDriverWait(driver, 2).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, f"div.private-selectable-box.private-selectable-button[aria-checked='{box.get_attribute('aria-checked')}']"))
-            )
-        
-        print(f"  Found {len(boxes)} interactive boxes")
-        
-        if len(boxes) != 2:
-            print(f"  ❌ Error: Expected 2 boxes, found {len(boxes)}")
-            raise Exception("Could not find both company boxes")
+        # Main retry loop
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            print(f"  Attempt {attempt + 1}/{max_attempts}...")
+            success, message = attempt_selection()
             
-        # Select the target box
-        target_box = boxes[1] if select_right else boxes[0]
-        print(f"  Initial aria-checked state: {target_box.get_attribute('aria-checked')}")
+            if success:
+                print(f"  ✅ {message}")
+                return
+            
+            print(f"  ⚠️ {message}, retrying...")
+            if attempt < max_attempts - 1:
+                time.sleep(0.5)  # Short delay between retries
         
-        # Ensure target box is in viewport and stable before clicking
-        print("  Positioning target box...")
-        driver.execute_script("""
-            arguments[0].scrollIntoView({block: 'center'});
-            // Small delay to ensure scroll completes
-            return new Promise(resolve => setTimeout(resolve, 100));
-        """, target_box)
-        
-        print("  Attempting to click box...")
-        driver.execute_script("arguments[0].click();", target_box)
-        print("  Click executed")
-        
-        # Wait for selection to update with better verification
-        print("  Waiting for selection to update...")
-        try:
-            # Wait for both the aria-checked update AND any loading spinners to disappear
-            WebDriverWait(driver, 2).until(lambda x: (
-                target_box.get_attribute('aria-checked') == 'true' and
-                len(driver.find_elements(By.CSS_SELECTOR, "div.private-loading-spinner")) == 0
-            ))
-            print(f"  ✅ Selection verified: {desired} box is now selected")
-        except TimeoutException:
-            print(f"  ❌ Selection failed to update after 2 seconds")
-            print(f"  Final aria-checked state: {target_box.get_attribute('aria-checked')}")
-            raise Exception("Selection failed to update")
-        
+        raise Exception(f"Failed to select {desired} company after {max_attempts} attempts")
     except Exception as e:
         print(f"  ❌ Error selecting primary company: {str(e)}")
         raise e
