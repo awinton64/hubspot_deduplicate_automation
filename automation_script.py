@@ -9,7 +9,53 @@ import time
 import os
 import json
 import psutil
+import argparse
+from pathlib import Path
 from selenium.common.exceptions import TimeoutException
+from tqdm import tqdm  # For progress bars
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='HubSpot Duplicate Company Automation')
+    
+    # Profile management
+    parser.add_argument('--profile', help='Chrome profile name to use')
+    parser.add_argument('--list-profiles', action='store_true', help='List available Chrome profiles and exit')
+    parser.add_argument('--save-last-profile', action='store_true', help='Save the selected profile as default')
+    
+    # Processing options
+    parser.add_argument('--pairs', type=int, help='Number of pairs to process')
+    parser.add_argument('--auto-reject-errors', action='store_true', help='Automatically reject pairs with errors')
+    parser.add_argument('--non-interactive', action='store_true', help='Run without asking for confirmation')
+    parser.add_argument('--batch-size', type=int, default=20, help='Number of pairs to process in each batch')
+    
+    # Output options
+    parser.add_argument('--quiet', action='store_true', help='Minimize output, show only important messages')
+    parser.add_argument('--debug', action='store_true', help='Show detailed debug information')
+    parser.add_argument('--log-file', help='Save detailed log to file')
+    
+    # Browser options
+    parser.add_argument('--keep-open', action='store_true', help='Keep browser open after completion')
+    parser.add_argument('--headless', action='store_true', help='Run in headless mode (no GUI)')
+    
+    return parser.parse_args()
+
+def get_config_dir():
+    """Get or create config directory"""
+    config_dir = Path.home() / '.hubspot_dedup'
+    config_dir.mkdir(exist_ok=True)
+    return config_dir
+
+def save_last_profile(profile_name):
+    """Save last used profile"""
+    config_file = get_config_dir() / 'last_profile'
+    config_file.write_text(profile_name)
+
+def get_last_profile():
+    """Get last used profile"""
+    config_file = get_config_dir() / 'last_profile'
+    if config_file.exists():
+        return config_file.read_text().strip()
+    return None
 
 def kill_existing_chrome():
     """Kill any existing Chrome processes"""
@@ -38,35 +84,74 @@ def get_chrome_profiles():
         print(f"Error reading Chrome profiles: {e}")
         return {}
 
-def list_and_select_profile():
+def list_and_select_profile(args):
+    """List and select Chrome profile with command line arg support"""
     profiles = get_chrome_profiles()
     
     if not profiles:
         print("No Chrome profiles found!")
         return None, None
     
-    print("\nAvailable Chrome profiles:")
-    print("-" * 50)
+    # Create a mapping of profile names to directories
+    profile_map = {
+        info.get('name', 'Unnamed'): dir_name 
+        for dir_name, info in profiles.items()
+    }
     
-    # Create a list of profiles for easy selection
-    profile_list = list(profiles.items())
-    for idx, (profile_dir, profile_info) in enumerate(profile_list, 1):
-        name = profile_info.get('name', 'Unnamed')
-        print(f"{idx}. {name} (Directory: {profile_dir})")
+    # If --list-profiles, just show profiles and exit
+    if args.list_profiles:
+        print("\nAvailable Chrome profiles:")
+        print("-" * 50)
+        for name in profile_map.keys():
+            print(f"  {name}")
+        print("-" * 50)
+        return None, None
     
-    print("-" * 50)
+    # If --profile is specified, use that
+    if args.profile:
+        if args.profile in profile_map:
+            if args.save_last_profile:
+                save_last_profile(args.profile)
+            return profile_map[args.profile], args.profile
+        else:
+            print(f"Error: Profile '{args.profile}' not found")
+            return None, None
     
-    while True:
-        try:
-            choice = int(input("\nSelect a profile number (or 0 to exit): "))
-            if choice == 0:
-                return None, None
-            if 1 <= choice <= len(profile_list):
-                selected_profile = profile_list[choice-1]
-                return selected_profile[0], selected_profile[1].get('name')
-            print("Invalid selection. Please try again.")
-        except ValueError:
-            print("Please enter a valid number.")
+    # Try to use last profile if no profile specified
+    last_profile = get_last_profile()
+    if last_profile and last_profile in profile_map and not args.quiet:
+        use_last = input(f"\nUse last profile '{last_profile}'? (Y/n): ").lower()
+        if use_last != 'n':
+            return profile_map[last_profile], last_profile
+    
+    # Interactive profile selection
+    if not args.non_interactive:
+        print("\nAvailable Chrome profiles:")
+        print("-" * 50)
+        
+        # Create a list of profiles for easy selection
+        profile_list = list(profile_map.items())
+        for idx, (name, dir_name) in enumerate(profile_list, 1):
+            print(f"{idx}. {name}")
+        
+        print("-" * 50)
+        
+        while True:
+            try:
+                choice = int(input("\nSelect a profile number (or 0 to exit): "))
+                if choice == 0:
+                    return None, None
+                if 1 <= choice <= len(profile_list):
+                    selected_profile = profile_list[choice-1]
+                    if args.save_last_profile:
+                        save_last_profile(selected_profile[0])
+                    return selected_profile[1], selected_profile[0]
+                print("Invalid selection. Please try again.")
+            except ValueError:
+                print("Please enter a valid number.")
+    
+    print("No profile selected")
+    return None, None
 
 def get_user_input():
     while True:
@@ -111,9 +196,9 @@ def login_to_hubspot(driver):
     time.sleep(5)
     print("Login completed")
 
-def setup_browser():
+def setup_browser(args):
     # Get Chrome profile
-    profile_dir, profile_name = list_and_select_profile()
+    profile_dir, profile_name = list_and_select_profile(args)
     if not profile_dir:
         print("No profile selected. Exiting...")
         return None
@@ -338,7 +423,7 @@ def get_company_domains(driver):
         print(f"Error getting company domains: {str(e)}")
         return None, None
 
-def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
+def process_duplicates(driver, pairs_to_process, auto_reject_errors=False, progress_bar=None, args=None):
     try:
         merged_companies = set()
         processed_count = 0
@@ -366,6 +451,8 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                         EC.staleness_of(reject_button)
                     )
                     processed_count += 1
+                    if progress_bar:
+                        progress_bar.update(1)
                     continue
                 
                 # Step 2: Click Review to open modal
@@ -384,10 +471,14 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                         print("Auto-rejecting this pair...")
                         cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
                         driver.execute_script("arguments[0].click();", cancel_button)
+                        if progress_bar:
+                            progress_bar.update(1)
                         continue
                     proceed = input("Continue with next pair? (y/n): ")
                     if proceed.lower() != 'y':
                         return False
+                    if progress_bar:
+                        progress_bar.update(1)
                     continue
                 
                 left_contacts, right_contacts = contact_counts
@@ -459,6 +550,8 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                     print("Canceling merge...")
                     cancel_button = driver.find_element(By.XPATH, "//button[contains(text(), 'Cancel')]")
                     driver.execute_script("arguments[0].click();", cancel_button)
+                    if progress_bar:
+                        progress_bar.update(1)
                     continue
                 
                 # Step 7: Execute merge
@@ -478,6 +571,9 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                 processed_count += 1
                 print("✅ Merge completed successfully")
                 
+                if progress_bar:
+                    progress_bar.update(1)
+                
             except Exception as e:
                 print(f"❌ Error processing pair: {str(e)}")
                 if auto_reject_errors:
@@ -487,10 +583,14 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
                         driver.execute_script("arguments[0].click();", cancel_button)
                     except:
                         pass  # Modal might already be closed
+                    if progress_bar:
+                        progress_bar.update(1)
                     continue
                 proceed = input("Continue with next pair? (y/n): ")
                 if proceed.lower() != 'y':
                     return False
+                if progress_bar:
+                    progress_bar.update(1)
                 continue
         
         return True
@@ -500,19 +600,34 @@ def process_duplicates(driver, pairs_to_process, auto_reject_errors=False):
         return False
 
 def automate_merge():
-    print("Starting automation - Chrome browser will open shortly...")
+    # Parse command line arguments
+    args = parse_args()
+    
+    # Setup logging if requested
+    if args.log_file:
+        import logging
+        logging.basicConfig(
+            filename=args.log_file,
+            level=logging.DEBUG if args.debug else logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+    
+    if not args.quiet:
+        print("Starting automation - Chrome browser will open shortly...")
     
     # Setup browser once
-    driver = setup_browser()
+    driver = setup_browser(args)
     if not driver:
         return
     
     try:
-        print("\nOpening HubSpot duplicates page...")
+        if not args.quiet:
+            print("\nOpening HubSpot duplicates page...")
         driver.get("https://app.hubspot.com/duplicates/22104039/companies")
         
-        print("\nWaiting for you to log in manually and navigate to the duplicates page...")
-        print("Please log in through the browser if needed.")
+        if not args.quiet:
+            print("\nWaiting for you to log in manually and navigate to the duplicates page...")
+            print("Please log in through the browser if needed.")
         
         # More efficient page load check
         WebDriverWait(driver, 60).until(
@@ -521,13 +636,29 @@ def automate_merge():
         
         # Main processing loop
         while True:
-            print("\nDetected that you're on the duplicates page!")
-            pairs_to_process = get_user_input()
+            if not args.quiet:
+                print("\nDetected that you're on the duplicates page!")
             
-            success = process_duplicates(driver, pairs_to_process)
+            # Get number of pairs to process
+            pairs_to_process = args.pairs or get_user_input() if not args.non_interactive else args.batch_size
+            
+            # Process in batches with progress bar
+            with tqdm(total=pairs_to_process, disable=args.quiet) as pbar:
+                success = process_duplicates(
+                    driver=driver,
+                    pairs_to_process=pairs_to_process,
+                    auto_reject_errors=args.auto_reject_errors,
+                    progress_bar=pbar,
+                    args=args
+                )
             
             if not success:
-                print("\nProcessing stopped due to an error or user request.")
+                if not args.quiet:
+                    print("\nProcessing stopped due to an error or user request.")
+            
+            # In non-interactive mode, we're done
+            if args.non_interactive:
+                break
             
             # Ask if user wants to process more
             another_batch = input("\nWould you like to process another batch? (y/n): ")
@@ -535,21 +666,33 @@ def automate_merge():
                 break
             
             # Refresh the page to get updated list of duplicates
-            print("\nRefreshing page to get updated duplicate list...")
+            if not args.quiet:
+                print("\nRefreshing page to get updated duplicate list...")
             driver.refresh()
-            # Wait for page to be interactive rather than using sleep
+            # Wait for page to be interactive
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "button[data-test-id='reviewDuplicates']"))
             )
         
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
-    finally:
-        keep_open = input("\nWould you like to keep the browser open? (y/n): ")
-        if keep_open.lower() != 'y':
-            driver.quit()
+        if args.debug:
+            import traceback
+            print(f"\n❌ Error details:\n{traceback.format_exc()}")
         else:
-            print("\nBrowser will remain open. You can close it manually when done.")
+            print(f"\n❌ An error occurred: {str(e)}")
+    finally:
+        if args.keep_open:
+            if not args.quiet:
+                print("\nBrowser will remain open. You can close it manually when done.")
+        else:
+            if not args.non_interactive and not args.quiet:
+                keep_open = input("\nWould you like to keep the browser open? (y/n): ")
+                if keep_open.lower() != 'y':
+                    driver.quit()
+                else:
+                    print("\nBrowser will remain open. You can close it manually when done.")
+            else:
+                driver.quit()
 
 if __name__ == "__main__":
     automate_merge() 
